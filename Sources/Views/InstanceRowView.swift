@@ -3,6 +3,7 @@ import SwiftUI
 struct InstanceRowView: View {
     let instance: OfferedInstanceType
     var apiService: LambdaAPIService
+    var compact: Bool = false
 
     private var isWatched: Bool {
         apiService.isWatched(instance.instanceType.name)
@@ -22,6 +23,10 @@ struct InstanceRowView: View {
             && apiService.launchState == .launching
     }
 
+    private var isAutoLaunch: Bool {
+        apiService.isAutoLaunch(instance.instanceType.name)
+    }
+
     private var accessibilityDescription: String {
         let name = instance.instanceType.description
         let price = instance.instanceType.formattedPrice
@@ -29,8 +34,9 @@ struct InstanceRowView: View {
             let regions = instance.regionsWithCapacityAvailable.map(\.description).joined(separator: ", ")
             return "\(name), \(price), available in \(regions)"
         } else {
-            let watched = isWatched ? ", notifications on" : ""
-            return "\(name), \(price), unavailable\(watched)"
+            let watched = isWatched ? ", watching" : ""
+            let auto = isAutoLaunch ? ", auto-launch enabled" : ""
+            return "\(name), \(price), unavailable\(watched)\(auto)"
         }
     }
 
@@ -38,58 +44,97 @@ struct InstanceRowView: View {
         HStack(alignment: .center, spacing: 6) {
             leadingIcon
 
-            if instance.isAvailable {
-                availableContent
-                Spacer(minLength: 4)
-                launchControl
+            if isWatched && !compact {
+                watchedContent
+            } else if instance.isAvailable && !compact {
+                expandedContent
             } else {
-                unavailableContent
+                compactContent
             }
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
-        .opacity(instance.isAvailable ? 1.0 : 0.6)
+        .opacity(instance.isAvailable || isWatched ? 1.0 : 0.6)
         .contentShape(Rectangle())
         .contextMenu { contextMenuContent }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityDescription)
     }
 
-    private var availableContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(instance.instanceType.description)
-                .font(.footnote.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(specsTooltip)
-
-            Text(regionsText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-
-            Text(instance.instanceType.formattedPrice)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var unavailableContent: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 0) {
+    private var watchedContent: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(instance.instanceType.description)
                     .font(.footnote.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(specsTooltip)
 
-                Spacer(minLength: 4)
+                if instance.isAvailable {
+                    Text(regionsText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else {
+                    Text("Unavailable")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
 
                 Text(instance.instanceType.formattedPrice)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
-                    .fixedSize()
             }
+
+            Spacer(minLength: 4)
+
+            if instance.isAvailable {
+                launchControl
+            } else {
+                autoLaunchToggle
+            }
+        }
+    }
+
+    private var expandedContent: some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(instance.instanceType.description)
+                    .font(.footnote.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(specsTooltip)
+
+                Text(regionsText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+
+                Text(instance.instanceType.formattedPrice)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 4)
+
+            launchControl
+        }
+    }
+
+    private var compactContent: some View {
+        HStack(spacing: 0) {
+            Text(instance.instanceType.description)
+                .font(.footnote.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(specsTooltip)
+
+            Spacer(minLength: 4)
+
+            Text(instance.instanceType.formattedPrice)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .fixedSize()
         }
     }
 
@@ -134,12 +179,25 @@ struct InstanceRowView: View {
                     .font(.caption2)
             }
             .menuStyle(.borderedButton)
-            .menuIndicator(.hidden)
             .controlSize(.small)
             .fixedSize()
-            .disabled(apiService.launchState == .launching)
-            .help("Launch instance")
+            .disabled(!instance.isAvailable || apiService.launchState == .launching)
+            .help(instance.isAvailable ? "Launch instance" : "Unavailable")
         }
+    }
+
+    private var autoLaunchToggle: some View {
+        Toggle(isOn: Binding(
+            get: { isAutoLaunch },
+            set: { _ in apiService.toggleAutoLaunch(for: instance.instanceType.name) }
+        )) {
+            Text("Auto")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .help("Automatically launch when available")
     }
 
     @ViewBuilder
@@ -163,7 +221,19 @@ struct InstanceRowView: View {
             if isWatched {
                 Label("Stop Watching", systemImage: "bell.slash")
             } else {
-                Label("Notify When Available", systemImage: "bell")
+                Label("Watch", systemImage: "bell")
+            }
+        }
+
+        if isWatched {
+            Button {
+                apiService.toggleAutoLaunch(for: instance.instanceType.name)
+            } label: {
+                if isAutoLaunch {
+                    Label("Disable Auto-launch", systemImage: "bolt.slash")
+                } else {
+                    Label("Enable Auto-launch", systemImage: "bolt")
+                }
             }
         }
     }

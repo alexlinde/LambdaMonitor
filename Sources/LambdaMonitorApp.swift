@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-@preconcurrency import UserNotifications
 
 @main
 struct LambdaMonitorApp: App {
@@ -12,7 +11,6 @@ struct LambdaMonitorApp: App {
         MenuBarExtra {
             MenuBarContent(apiService: apiService, showSettings: $showSettings)
                 .onAppear {
-                    appDelegate.apiService = apiService
                     if apiService.hasAPIKey {
                         apiService.startAutoRefresh()
                     }
@@ -24,52 +22,9 @@ struct LambdaMonitorApp: App {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    nonisolated(unsafe) var apiService: LambdaAPIService?
-
+final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-
-        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-
-        let launchAction = UNNotificationAction(
-            identifier: "LAUNCH_ACTION",
-            title: "Launch Instance",
-            options: []
-        )
-        let category = UNNotificationCategory(
-            identifier: "INSTANCE_AVAILABLE",
-            actions: [launchAction],
-            intentIdentifiers: []
-        )
-        center.setNotificationCategories([category])
-    }
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
-    }
-
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        guard response.actionIdentifier == "LAUNCH_ACTION" else { return }
-        let userInfo = response.notification.request.content.userInfo
-        guard let typeName = userInfo["instanceTypeName"] as? String,
-              let regionName = userInfo["regionName"] as? String,
-              !regionName.isEmpty else { return }
-
-        await apiService?.launchInstance(
-            typeName: typeName,
-            regionName: regionName,
-            fromNotification: true
-        )
     }
 }
 

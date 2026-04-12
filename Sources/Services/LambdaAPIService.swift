@@ -1,5 +1,4 @@
 import Foundation
-@preconcurrency import UserNotifications
 
 @MainActor
 @Observable
@@ -14,6 +13,7 @@ final class LambdaAPIService {
     var launchInstanceTypeName: String?
     var terminatingInstanceIds: Set<String> = []
     var watchedTypes: Set<String>
+    var autoLaunchTypes: Set<String>
 
     private var timerTask: Task<Void, Never>?
     private var launchDismissTask: Task<Void, Never>?
@@ -23,6 +23,7 @@ final class LambdaAPIService {
 
     init() {
         watchedTypes = Set(UserDefaults.standard.stringArray(forKey: "watchedInstanceTypes") ?? [])
+        autoLaunchTypes = Set(UserDefaults.standard.stringArray(forKey: "autoLaunchInstanceTypes") ?? [])
     }
 
     var hasAPIKey: Bool {
@@ -81,10 +82,12 @@ final class LambdaAPIService {
                 let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
                 if self.hasCompletedInitialFetch {
                     let newlyAvailable = currentlyAvailable.subtracting(self.previousAvailableTypes)
-                    let watchedNewlyAvailable = newlyAvailable.intersection(self.watchedTypes)
-                    for typeName in watchedNewlyAvailable {
-                        if let instance = result.first(where: { $0.instanceType.name == typeName }) {
-                            self.sendAvailabilityNotification(for: instance)
+                    let autoLaunchCandidates = newlyAvailable.intersection(self.autoLaunchTypes)
+                    for typeName in autoLaunchCandidates {
+                        if let instance = result.first(where: { $0.instanceType.name == typeName }),
+                           let region = instance.regionsWithCapacityAvailable.first {
+                            self.disableAutoLaunch(for: typeName)
+                            self.launchInstance(typeName: typeName, regionName: region.name)
                         }
                     }
                 }
@@ -101,7 +104,7 @@ final class LambdaAPIService {
 
     // MARK: - Launch Instance
 
-    func launchInstance(typeName: String, regionName: String, fromNotification: Bool = false) {
+    func launchInstance(typeName: String, regionName: String) {
         guard let apiKey = KeychainService.load(), !apiKey.isEmpty else {
             launchState = .failure("No API key configured")
             launchInstanceTypeName = typeName
@@ -129,20 +132,8 @@ final class LambdaAPIService {
                     sshKeyNames: [sshKeyName]
                 )
                 self.launchState = .success(instanceIds: instanceIds)
-                if fromNotification {
-                    self.sendResultNotification(
-                        title: "Instance Launched",
-                        body: "\(typeName) launched successfully"
-                    )
-                }
             } catch {
                 self.launchState = .failure(error.localizedDescription)
-                if fromNotification {
-                    self.sendResultNotification(
-                        title: "Launch Failed",
-                        body: error.localizedDescription
-                    )
-                }
             }
             self.scheduleLaunchDismiss()
         }
@@ -188,15 +179,15 @@ final class LambdaAPIService {
         }
     }
 
-    // MARK: - Watch / Notifications
+    // MARK: - Watch / Auto-launch
 
     func toggleWatch(for typeName: String) {
         var types = watchedTypes
         if types.contains(typeName) {
             types.remove(typeName)
+            disableAutoLaunch(for: typeName)
         } else {
             types.insert(typeName)
-            requestNotificationPermissionIfNeeded()
         }
         watchedTypes = types
         UserDefaults.standard.set(Array(watchedTypes), forKey: "watchedInstanceTypes")
@@ -206,54 +197,26 @@ final class LambdaAPIService {
         watchedTypes.contains(typeName)
     }
 
-    private static var canUseNotifications: Bool {
-        Bundle.main.bundleURL.pathExtension == "app"
-    }
-
-    private func requestNotificationPermissionIfNeeded() {
-        guard Self.canUseNotifications else { return }
-        Task {
-            let settings = await UNUserNotificationCenter.current().notificationSettings()
-            if settings.authorizationStatus == .notDetermined {
-                _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
-            }
+    func toggleAutoLaunch(for typeName: String) {
+        var types = autoLaunchTypes
+        if types.contains(typeName) {
+            types.remove(typeName)
+        } else {
+            types.insert(typeName)
         }
+        autoLaunchTypes = types
+        UserDefaults.standard.set(Array(autoLaunchTypes), forKey: "autoLaunchInstanceTypes")
     }
 
-    private func sendAvailabilityNotification(for instance: OfferedInstanceType) {
-        guard Self.canUseNotifications else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "GPU Available"
-        let regions = instance.regionsWithCapacityAvailable.map(\.description).joined(separator: ", ")
-        content.body = "\(instance.instanceType.description) is now available in \(regions)"
-        content.sound = .default
-        content.categoryIdentifier = "INSTANCE_AVAILABLE"
-        content.userInfo = [
-            "instanceTypeName": instance.instanceType.name,
-            "regionName": instance.regionsWithCapacityAvailable.first?.name ?? ""
-        ]
-
-        let request = UNNotificationRequest(
-            identifier: "availability-\(instance.instanceType.name)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+    func isAutoLaunch(_ typeName: String) -> Bool {
+        autoLaunchTypes.contains(typeName)
     }
 
-    private func sendResultNotification(title: String, body: String) {
-        guard Self.canUseNotifications else { return }
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-
-        let request = UNNotificationRequest(
-            identifier: "launch-result-\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+    private func disableAutoLaunch(for typeName: String) {
+        var types = autoLaunchTypes
+        types.remove(typeName)
+        autoLaunchTypes = types
+        UserDefaults.standard.set(Array(autoLaunchTypes), forKey: "autoLaunchInstanceTypes")
     }
 
     // MARK: - API Key Test

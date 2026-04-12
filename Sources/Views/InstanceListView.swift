@@ -142,12 +142,16 @@ struct InstanceListView: View {
         }
     }
 
+    private var watchedInstances: [OfferedInstanceType] {
+        apiService.instances.filter { apiService.isWatched($0.instanceType.name) }
+    }
+
     private var availableInstances: [OfferedInstanceType] {
-        apiService.instances.filter(\.isAvailable)
+        apiService.instances.filter { $0.isAvailable && !apiService.isWatched($0.instanceType.name) }
     }
 
     private var unavailableInstances: [OfferedInstanceType] {
-        apiService.instances.filter { !$0.isAvailable }
+        apiService.instances.filter { !$0.isAvailable && !apiService.isWatched($0.instanceType.name) }
     }
 
     private var instanceList: some View {
@@ -160,17 +164,27 @@ struct InstanceListView: View {
                     }
                 }
 
-                if !availableInstances.isEmpty {
-                    sectionHeader("Available")
-                    ForEach(availableInstances) { instance in
+                if !watchedInstances.isEmpty {
+                    sectionHeader("Watched")
+                    ForEach(watchedInstances) { instance in
                         InstanceRowView(instance: instance, apiService: apiService)
                     }
                 }
 
+                if !availableInstances.isEmpty {
+                    sectionHeader("Available")
+                    ForEach(availableInstances) { instance in
+                        InstanceRowView(instance: instance, apiService: apiService, compact: true)
+                    }
+                }
+
                 if !unavailableInstances.isEmpty {
-                    sectionHeader(availableInstances.isEmpty ? "All Unavailable" : "Unavailable")
+                    sectionHeader(
+                        availableInstances.isEmpty && watchedInstances.isEmpty
+                            ? "All Unavailable" : "Unavailable"
+                    )
                     ForEach(unavailableInstances) { instance in
-                        InstanceRowView(instance: instance, apiService: apiService)
+                        InstanceRowView(instance: instance, apiService: apiService, compact: true)
                     }
                 }
             }
@@ -267,7 +281,11 @@ struct InstanceListView: View {
         HStack {
             Spacer()
 
-            if let lastUpdated = apiService.lastUpdated {
+            if apiService.error != nil {
+                Text("Not connected")
+                    .font(.caption2)
+                    .foregroundStyle(.red.opacity(0.8))
+            } else if let lastUpdated = apiService.lastUpdated {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let elapsed = Int(context.date.timeIntervalSince(lastUpdated))
                     let text = elapsed < 2
@@ -277,6 +295,10 @@ struct InstanceListView: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+            } else {
+                Text("Not connected")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
         .padding(.horizontal, 12)
