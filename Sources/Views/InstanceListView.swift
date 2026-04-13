@@ -194,7 +194,7 @@ struct InstanceListView: View {
         .frame(maxHeight: 400)
     }
 
-    private func sectionHeader(_ title: String, detail: String? = nil) -> some View {
+    private func sectionHeader(_ title: String) -> some View {
         HStack {
             Text(title)
                 .font(.caption2.weight(.semibold))
@@ -202,12 +202,6 @@ struct InstanceListView: View {
                 .textCase(.uppercase)
 
             Spacer()
-
-            if let detail {
-                Text(detail)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-            }
         }
         .padding(.horizontal, 4)
         .padding(.top, 6)

@@ -5,8 +5,6 @@ struct RunningInstanceRowView: View {
     let instance: RunningInstance
     var apiService: LambdaAPIService
 
-    @State private var showTerminateConfirmation = false
-
     private var statusColor: Color {
         switch instance.status {
         case "active": .green
@@ -85,20 +83,6 @@ struct RunningInstanceRowView: View {
         .padding(.horizontal, 4)
         .contentShape(Rectangle())
         .contextMenu { contextMenuContent }
-        .alert(
-            "Terminate Instance?",
-            isPresented: $showTerminateConfirmation
-        ) {
-            Button("Terminate", role: .destructive) {
-                apiService.terminateInstance(
-                    id: instance.id,
-                    description: instance.instanceType.description
-                )
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will terminate your \(instance.instanceType.description) in \(instance.region.description). You will be billed for usage up to this point.")
-        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityDescription)
     }
@@ -111,7 +95,7 @@ struct RunningInstanceRowView: View {
                 .frame(height: 16)
         } else {
             Button {
-                showTerminateConfirmation = true
+                confirmAndTerminate()
             } label: {
                 Text("Terminate")
                     .font(.caption2)
@@ -119,6 +103,23 @@ struct RunningInstanceRowView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .help("Terminate instance")
+        }
+    }
+
+    private func confirmAndTerminate() {
+        let alert = NSAlert()
+        alert.messageText = "Terminate Instance?"
+        alert.informativeText = "This will terminate your \(instance.instanceType.description) in \(instance.region.description). You will be billed for usage up to this point."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Terminate")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            apiService.terminateInstance(
+                id: instance.id,
+                description: instance.instanceType.description
+            )
         }
     }
 
@@ -162,7 +163,7 @@ struct RunningInstanceRowView: View {
         }
 
         Button(role: .destructive) {
-            showTerminateConfirmation = true
+            confirmAndTerminate()
         } label: {
             Label("Terminate Instance…", systemImage: "stop.fill")
         }

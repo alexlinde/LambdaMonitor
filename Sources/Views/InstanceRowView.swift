@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct InstanceRowView: View {
     let instance: OfferedInstanceType
@@ -150,8 +151,8 @@ struct InstanceRowView: View {
         }
         .buttonStyle(.plain)
         .padding(.top, 2)
-        .help(isWatched ? "Stop watching" : "Notify when available")
-        .accessibilityLabel(isWatched ? "Stop watching for availability" : "Notify when available")
+        .help(isWatched ? "Stop watching" : "Watch for availability")
+        .accessibilityLabel(isWatched ? "Stop watching" : "Watch for availability")
     }
 
     @ViewBuilder
@@ -162,11 +163,11 @@ struct InstanceRowView: View {
                 .frame(height: 16)
         } else {
             Menu {
-                if apiService.sshKeyName.isEmpty {
-                    Text("Set SSH key name in Settings first")
-                } else {
-                    ForEach(instance.regionsWithCapacityAvailable) { region in
-                        Button("Launch in \(region.description)") {
+                ForEach(instance.regionsWithCapacityAvailable) { region in
+                    Button("Launch in \(region.description)") {
+                        if apiService.sshKeyName.isEmpty {
+                            Self.showSSHKeyWarning()
+                        } else {
                             apiService.launchInstance(
                                 typeName: instance.instanceType.name,
                                 regionName: region.name
@@ -189,7 +190,13 @@ struct InstanceRowView: View {
     private var autoLaunchToggle: some View {
         Toggle(isOn: Binding(
             get: { isAutoLaunch },
-            set: { _ in apiService.toggleAutoLaunch(for: instance.instanceType.name) }
+            set: { newValue in
+                if newValue && apiService.sshKeyName.isEmpty {
+                    Self.showSSHKeyWarning()
+                } else {
+                    apiService.toggleAutoLaunch(for: instance.instanceType.name)
+                }
+            }
         )) {
             Text("Auto")
                 .font(.caption2)
@@ -198,6 +205,15 @@ struct InstanceRowView: View {
         .toggleStyle(.switch)
         .controlSize(.mini)
         .help("Automatically launch when available")
+    }
+
+    private static func showSSHKeyWarning() {
+        let alert = NSAlert()
+        alert.messageText = "SSH Key Required"
+        alert.informativeText = "Set an SSH key name in Settings before launching or enabling auto-launch."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @ViewBuilder
@@ -227,7 +243,11 @@ struct InstanceRowView: View {
 
         if isWatched {
             Button {
-                apiService.toggleAutoLaunch(for: instance.instanceType.name)
+                if !isAutoLaunch && apiService.sshKeyName.isEmpty {
+                    Self.showSSHKeyWarning()
+                } else {
+                    apiService.toggleAutoLaunch(for: instance.instanceType.name)
+                }
             } label: {
                 if isAutoLaunch {
                     Label("Disable Auto-launch", systemImage: "bolt.slash")

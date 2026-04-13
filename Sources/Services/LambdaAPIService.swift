@@ -3,6 +3,12 @@ import Foundation
 @MainActor
 @Observable
 final class LambdaAPIService {
+    private enum DefaultsKey {
+        static let watchedTypes = "watchedInstanceTypes"
+        static let autoLaunchTypes = "autoLaunchInstanceTypes"
+        static let sshKeyName = "sshKeyName"
+    }
+
     var instances: [OfferedInstanceType] = []
     var runningInstances: [RunningInstance] = []
     var lastUpdated: Date?
@@ -22,8 +28,8 @@ final class LambdaAPIService {
     private var hasCompletedInitialFetch = false
 
     init() {
-        watchedTypes = Set(UserDefaults.standard.stringArray(forKey: "watchedInstanceTypes") ?? [])
-        autoLaunchTypes = Set(UserDefaults.standard.stringArray(forKey: "autoLaunchInstanceTypes") ?? [])
+        watchedTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.watchedTypes) ?? [])
+        autoLaunchTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.autoLaunchTypes) ?? [])
     }
 
     var hasAPIKey: Bool {
@@ -31,7 +37,7 @@ final class LambdaAPIService {
     }
 
     var sshKeyName: String {
-        UserDefaults.standard.string(forKey: "sshKeyName") ?? ""
+        UserDefaults.standard.string(forKey: DefaultsKey.sshKeyName) ?? ""
     }
 
     // MARK: - Auto-refresh
@@ -80,15 +86,14 @@ final class LambdaAPIService {
                 self.error = nil
 
                 let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
-                if self.hasCompletedInitialFetch {
+                if self.hasCompletedInitialFetch && !self.sshKeyName.isEmpty {
                     let newlyAvailable = currentlyAvailable.subtracting(self.previousAvailableTypes)
                     let autoLaunchCandidates = newlyAvailable.intersection(self.autoLaunchTypes)
-                    for typeName in autoLaunchCandidates {
-                        if let instance = result.first(where: { $0.instanceType.name == typeName }),
-                           let region = instance.regionsWithCapacityAvailable.first {
-                            self.disableAutoLaunch(for: typeName)
-                            self.launchInstance(typeName: typeName, regionName: region.name)
-                        }
+                    if let typeName = autoLaunchCandidates.first,
+                       let instance = result.first(where: { $0.instanceType.name == typeName }),
+                       let region = instance.regionsWithCapacityAvailable.first {
+                        self.disableAutoLaunch(for: typeName)
+                        self.launchInstance(typeName: typeName, regionName: region.name)
                     }
                 }
                 self.previousAvailableTypes = currentlyAvailable
@@ -190,7 +195,7 @@ final class LambdaAPIService {
             types.insert(typeName)
         }
         watchedTypes = types
-        UserDefaults.standard.set(Array(watchedTypes), forKey: "watchedInstanceTypes")
+        UserDefaults.standard.set(Array(watchedTypes), forKey: DefaultsKey.watchedTypes)
     }
 
     func isWatched(_ typeName: String) -> Bool {
@@ -205,7 +210,7 @@ final class LambdaAPIService {
             types.insert(typeName)
         }
         autoLaunchTypes = types
-        UserDefaults.standard.set(Array(autoLaunchTypes), forKey: "autoLaunchInstanceTypes")
+        UserDefaults.standard.set(Array(autoLaunchTypes), forKey: DefaultsKey.autoLaunchTypes)
     }
 
     func isAutoLaunch(_ typeName: String) -> Bool {
@@ -216,7 +221,7 @@ final class LambdaAPIService {
         var types = autoLaunchTypes
         types.remove(typeName)
         autoLaunchTypes = types
-        UserDefaults.standard.set(Array(autoLaunchTypes), forKey: "autoLaunchInstanceTypes")
+        UserDefaults.standard.set(Array(autoLaunchTypes), forKey: DefaultsKey.autoLaunchTypes)
     }
 
     // MARK: - API Key Test
@@ -297,7 +302,7 @@ final class LambdaAPIService {
 
         guard httpResponse.statusCode == 200 else {
             if let errorResponse = try? JSONDecoder().decode(LambdaErrorResponse.self, from: data) {
-                throw APIError.launchFailed(errorResponse.error.message)
+                throw APIError.serverError(errorResponse.error.message)
             }
             throw APIError.httpError(httpResponse.statusCode)
         }
@@ -332,7 +337,7 @@ final class LambdaAPIService {
 
         guard httpResponse.statusCode == 200 else {
             if let errorResponse = try? JSONDecoder().decode(LambdaErrorResponse.self, from: data) {
-                throw APIError.launchFailed(errorResponse.error.message)
+                throw APIError.serverError(errorResponse.error.message)
             }
             if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
                 throw APIError.unauthorized
@@ -359,7 +364,7 @@ enum APIError: LocalizedError {
     case invalidResponse
     case unauthorized
     case httpError(Int)
-    case launchFailed(String)
+    case serverError(String)
 
     var errorDescription: String? {
         switch self {
@@ -369,7 +374,7 @@ enum APIError: LocalizedError {
             "Invalid API key"
         case .httpError(let code):
             "HTTP error \(code)"
-        case .launchFailed(let message):
+        case .serverError(let message):
             message
         }
     }
