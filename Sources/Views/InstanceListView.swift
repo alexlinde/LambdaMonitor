@@ -167,14 +167,14 @@ struct InstanceListView: View {
                 if !watchedInstances.isEmpty {
                     sectionHeader("Watched")
                     ForEach(watchedInstances) { instance in
-                        InstanceRowView(instance: instance, apiService: apiService)
+                        InstanceRowView(instance: instance, apiService: apiService, showSettings: $showSettings)
                     }
                 }
 
                 if !availableInstances.isEmpty {
                     sectionHeader("Available")
                     ForEach(availableInstances) { instance in
-                        InstanceRowView(instance: instance, apiService: apiService, compact: true)
+                        InstanceRowView(instance: instance, apiService: apiService, compact: true, showSettings: $showSettings)
                     }
                 }
 
@@ -184,7 +184,7 @@ struct InstanceListView: View {
                             ? "All Unavailable" : "Unavailable"
                     )
                     ForEach(unavailableInstances) { instance in
-                        InstanceRowView(instance: instance, apiService: apiService, compact: true)
+                        InstanceRowView(instance: instance, apiService: apiService, compact: true, showSettings: $showSettings)
                     }
                 }
             }

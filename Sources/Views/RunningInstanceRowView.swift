@@ -18,6 +18,10 @@ struct RunningInstanceRowView: View {
         apiService.terminatingInstanceIds.contains(instance.id)
     }
 
+    private var canTerminate: Bool {
+        instance.status == "active" || instance.status == "booting" || instance.status == "unhealthy"
+    }
+
     private var tooltip: String {
         var parts: [String] = []
         if let name = instance.name, !name.isEmpty {
@@ -70,9 +74,17 @@ struct RunningInstanceRowView: View {
                 }
                 .lineLimit(1)
 
-                Text(instance.instanceType.formattedPrice)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 0) {
+                    Text(instance.status.capitalized)
+                        .font(.caption)
+                        .foregroundStyle(statusColor)
+                    Text(" · ")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Text(instance.instanceType.formattedPrice)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer(minLength: 4)
@@ -93,7 +105,7 @@ struct RunningInstanceRowView: View {
             ProgressView()
                 .scaleEffect(0.5)
                 .frame(height: 16)
-        } else {
+        } else if canTerminate {
             Button {
                 confirmAndTerminate()
             } label: {
@@ -103,6 +115,10 @@ struct RunningInstanceRowView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .help("Terminate instance")
+        } else {
+            Text(instance.status.capitalized)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -167,5 +183,6 @@ struct RunningInstanceRowView: View {
         } label: {
             Label("Terminate Instance…", systemImage: "stop.fill")
         }
+        .disabled(!canTerminate)
     }
 }

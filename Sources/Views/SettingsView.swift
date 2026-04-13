@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     var apiService: LambdaAPIService
@@ -8,7 +9,6 @@ struct SettingsView: View {
     @State private var sshKeyName: String = UserDefaults.standard.string(forKey: "sshKeyName") ?? ""
     @State private var isTesting = false
     @State private var testResult: TestResult?
-    @State private var showClearConfirmation = false
 
     enum TestResult {
         case success
@@ -18,7 +18,10 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Button(action: { isPresented = false }) {
+                Button(action: {
+                    apiService.showSSHKeyWarning = false
+                    isPresented = false
+                }) {
                     HStack(spacing: 4) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 12, weight: .semibold))
@@ -54,13 +57,29 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("SSH Key Name")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(apiService.showSSHKeyWarning ? .orange : .secondary)
 
                 TextField("e.g. my-laptop-key", text: $sshKeyName)
                     .textFieldStyle(.roundedBorder)
                     .onChange(of: sshKeyName) { _, newValue in
                         UserDefaults.standard.set(newValue, forKey: "sshKeyName")
+                        if !newValue.isEmpty {
+                            apiService.showSSHKeyWarning = false
+                        }
                     }
+
+                if apiService.showSSHKeyWarning {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("An SSH key name is required for launching and auto-launch.")
+                            .font(.caption)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
 
                 Text("Required for launching instances. Manage keys at [cloud.lambdalabs.com/ssh-keys](https://cloud.lambdalabs.com/ssh-keys)")
                     .font(.caption2)
@@ -89,25 +108,12 @@ struct SettingsView: View {
 
                 if KeychainService.load() != nil {
                     Button("Clear Key", role: .destructive) {
-                        showClearConfirmation = true
+                        confirmAndClearKey()
                     }
                     .controlSize(.small)
                 }
             }
 
-        }
-        .alert("Clear API Key?", isPresented: $showClearConfirmation) {
-            Button("Clear", role: .destructive) {
-                KeychainService.delete()
-                apiKey = ""
-                testResult = nil
-                apiService.stopAutoRefresh()
-                apiService.instances = []
-                apiService.error = "No API key configured"
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will remove your saved API key. You'll need to re-enter it to continue monitoring.")
         }
         .padding(16)
         .frame(width: 380)
@@ -144,6 +150,25 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.red.opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func confirmAndClearKey() {
+        let alert = NSAlert()
+        alert.messageText = "Clear API Key?"
+        alert.informativeText = "This will remove your saved API key. You'll need to re-enter it to continue monitoring."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            KeychainService.delete()
+            apiKey = ""
+            testResult = nil
+            apiService.stopAutoRefresh()
+            apiService.instances = []
+            apiService.error = "No API key configured"
         }
     }
 

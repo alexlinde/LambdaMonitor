@@ -20,6 +20,7 @@ final class LambdaAPIService {
     var terminatingInstanceIds: Set<String> = []
     var watchedTypes: Set<String>
     var autoLaunchTypes: Set<String>
+    var showSSHKeyWarning = false
 
     private var timerTask: Task<Void, Never>?
     private var launchDismissTask: Task<Void, Never>?

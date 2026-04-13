@@ -1,10 +1,10 @@
 import SwiftUI
-import AppKit
 
 struct InstanceRowView: View {
     let instance: OfferedInstanceType
     var apiService: LambdaAPIService
     var compact: Bool = false
+    @Binding var showSettings: Bool
 
     private var isWatched: Bool {
         apiService.isWatched(instance.instanceType.name)
@@ -166,7 +166,8 @@ struct InstanceRowView: View {
                 ForEach(instance.regionsWithCapacityAvailable) { region in
                     Button("Launch in \(region.description)") {
                         if apiService.sshKeyName.isEmpty {
-                            Self.showSSHKeyWarning()
+                            apiService.showSSHKeyWarning = true
+                            showSettings = true
                         } else {
                             apiService.launchInstance(
                                 typeName: instance.instanceType.name,
@@ -192,7 +193,8 @@ struct InstanceRowView: View {
             get: { isAutoLaunch },
             set: { newValue in
                 if newValue && apiService.sshKeyName.isEmpty {
-                    Self.showSSHKeyWarning()
+                    apiService.showSSHKeyWarning = true
+                    showSettings = true
                 } else {
                     apiService.toggleAutoLaunch(for: instance.instanceType.name)
                 }
@@ -205,15 +207,6 @@ struct InstanceRowView: View {
         .toggleStyle(.switch)
         .controlSize(.mini)
         .help("Automatically launch when available")
-    }
-
-    private static func showSSHKeyWarning() {
-        let alert = NSAlert()
-        alert.messageText = "SSH Key Required"
-        alert.informativeText = "Set an SSH key name in Settings before launching or enabling auto-launch."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 
     @ViewBuilder
@@ -244,7 +237,8 @@ struct InstanceRowView: View {
         if isWatched {
             Button {
                 if !isAutoLaunch && apiService.sshKeyName.isEmpty {
-                    Self.showSSHKeyWarning()
+                    apiService.showSSHKeyWarning = true
+                    showSettings = true
                 } else {
                     apiService.toggleAutoLaunch(for: instance.instanceType.name)
                 }
