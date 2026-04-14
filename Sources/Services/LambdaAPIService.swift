@@ -15,12 +15,14 @@ final class LambdaAPIService {
     var error: String?
     var isLoading = false
 
+    var sshKeys: [SSHKey] = []
+    var isLoadingSSHKeys = false
+
     var launchState: LaunchState?
     var launchInstanceTypeName: String?
     var terminatingInstanceIds: Set<String> = []
     var watchedTypes: Set<String>
     var autoLaunchTypes: Set<String>
-    var showSSHKeyWarning = false
 
     private var timerTask: Task<Void, Never>?
     private var launchDismissTask: Task<Void, Never>?
@@ -37,8 +39,9 @@ final class LambdaAPIService {
         KeychainService.load() != nil
     }
 
-    var sshKeyName: String {
-        UserDefaults.standard.string(forKey: DefaultsKey.sshKeyName) ?? ""
+    var selectedSSHKeyName: String {
+        get { UserDefaults.standard.string(forKey: DefaultsKey.sshKeyName) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: DefaultsKey.sshKeyName) }
     }
 
     // MARK: - Auto-refresh
@@ -46,6 +49,7 @@ final class LambdaAPIService {
     func startAutoRefresh() {
         timerTask?.cancel()
         fetch()
+        fetchSSHKeys()
         timerTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(refreshInterval))
@@ -87,7 +91,7 @@ final class LambdaAPIService {
                 self.error = nil
 
                 let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
-                if self.hasCompletedInitialFetch && !self.sshKeyName.isEmpty {
+                if self.hasCompletedInitialFetch && !self.selectedSSHKeyName.isEmpty {
                     let newlyAvailable = currentlyAvailable.subtracting(self.previousAvailableTypes)
                     let autoLaunchCandidates = newlyAvailable.intersection(self.autoLaunchTypes)
                     if let typeName = autoLaunchCandidates.first,
@@ -108,6 +112,30 @@ final class LambdaAPIService {
         }
     }
 
+    // MARK: - SSH Keys
+
+    func fetchSSHKeys() {
+        guard let apiKey = KeychainService.load(), !apiKey.isEmpty else { return }
+
+        isLoadingSSHKeys = true
+        Task {
+            do {
+                let keys = try await Self.fetchSSHKeysRaw(apiKey: apiKey)
+                self.sshKeys = keys.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                if !self.selectedSSHKeyName.isEmpty,
+                   !keys.contains(where: { $0.name == self.selectedSSHKeyName }) {
+                    self.selectedSSHKeyName = ""
+                }
+                if self.selectedSSHKeyName.isEmpty, self.sshKeys.count == 1 {
+                    self.selectedSSHKeyName = self.sshKeys[0].name
+                }
+            } catch {
+                // SSH key fetch failures are non-critical; leave existing list
+            }
+            self.isLoadingSSHKeys = false
+        }
+    }
+
     // MARK: - Launch Instance
 
     func launchInstance(typeName: String, regionName: String) {
@@ -118,8 +146,8 @@ final class LambdaAPIService {
             return
         }
 
-        guard !sshKeyName.isEmpty else {
-            launchState = .failure("No SSH key name configured — set one in Settings")
+        guard !selectedSSHKeyName.isEmpty else {
+            launchState = .failure("No SSH key selected — choose one in Settings")
             launchInstanceTypeName = typeName
             scheduleLaunchDismiss()
             return
@@ -135,7 +163,7 @@ final class LambdaAPIService {
                     apiKey: apiKey,
                     typeName: typeName,
                     regionName: regionName,
-                    sshKeyNames: [sshKeyName]
+                    sshKeyNames: [selectedSSHKeyName]
                 )
                 self.launchState = .success(instanceIds: instanceIds)
             } catch {
@@ -281,6 +309,29 @@ final class LambdaAPIService {
         }
 
         let decoded = try JSONDecoder().decode(RunningInstancesResponse.self, from: data)
+        return decoded.data
+    }
+
+    private static func fetchSSHKeysRaw(apiKey: String) async throws -> [SSHKey] {
+        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/ssh-keys")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+                throw APIError.unauthorized
+            }
+            throw APIError.httpError(httpResponse.statusCode)
+        }
+
+        let decoded = try JSONDecoder().decode(SSHKeysResponse.self, from: data)
         return decoded.data
     }
 

@@ -5,11 +5,10 @@ import AppKit
 struct LambdaMonitorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var apiService = LambdaAPIService()
-    @State private var showSettings = false
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContent(apiService: apiService, showSettings: $showSettings)
+            InstanceListView(apiService: apiService)
                 .onAppear {
                     if apiService.hasAPIKey {
                         apiService.startAutoRefresh()
@@ -19,6 +18,12 @@ struct LambdaMonitorApp: App {
             MenuBarLabel(apiService: apiService)
         }
         .menuBarExtraStyle(.window)
+
+        Window("Lambda Monitor Settings", id: "settings") {
+            SettingsView(apiService: apiService)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 
@@ -48,18 +53,5 @@ private struct MenuBarLabel: View {
                     ? "Lambda: disconnected"
                     : (watchedAvailable ? "Watched GPU available" : "No watched GPU available")
             )
-    }
-}
-
-private struct MenuBarContent: View {
-    var apiService: LambdaAPIService
-    @Binding var showSettings: Bool
-
-    var body: some View {
-        if showSettings {
-            SettingsView(apiService: apiService, isPresented: $showSettings)
-        } else {
-            InstanceListView(apiService: apiService, showSettings: $showSettings)
-        }
     }
 }

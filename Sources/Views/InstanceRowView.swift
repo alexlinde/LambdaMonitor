@@ -1,10 +1,11 @@
 import SwiftUI
+import AppKit
 
 struct InstanceRowView: View {
     let instance: OfferedInstanceType
     var apiService: LambdaAPIService
     var compact: Bool = false
-    @Binding var showSettings: Bool
+    @Environment(\.openWindow) private var openWindow
 
     private var isWatched: Bool {
         apiService.isWatched(instance.instanceType.name)
@@ -165,9 +166,8 @@ struct InstanceRowView: View {
             Menu {
                 ForEach(instance.regionsWithCapacityAvailable) { region in
                     Button("Launch in \(region.description)") {
-                        if apiService.sshKeyName.isEmpty {
-                            apiService.showSSHKeyWarning = true
-                            showSettings = true
+                        if apiService.selectedSSHKeyName.isEmpty {
+                            openSettingsWindow()
                         } else {
                             apiService.launchInstance(
                                 typeName: instance.instanceType.name,
@@ -192,9 +192,8 @@ struct InstanceRowView: View {
         Toggle(isOn: Binding(
             get: { isAutoLaunch },
             set: { newValue in
-                if newValue && apiService.sshKeyName.isEmpty {
-                    apiService.showSSHKeyWarning = true
-                    showSettings = true
+                if newValue && apiService.selectedSSHKeyName.isEmpty {
+                    openSettingsWindow()
                 } else {
                     apiService.toggleAutoLaunch(for: instance.instanceType.name)
                 }
@@ -209,9 +208,14 @@ struct InstanceRowView: View {
         .help("Automatically launch when available")
     }
 
+    private func openSettingsWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "settings")
+    }
+
     @ViewBuilder
     private var contextMenuContent: some View {
-        if instance.isAvailable && !apiService.sshKeyName.isEmpty {
+        if instance.isAvailable && !apiService.selectedSSHKeyName.isEmpty {
             ForEach(instance.regionsWithCapacityAvailable) { region in
                 Button {
                     apiService.launchInstance(
@@ -236,9 +240,8 @@ struct InstanceRowView: View {
 
         if isWatched {
             Button {
-                if !isAutoLaunch && apiService.sshKeyName.isEmpty {
-                    apiService.showSSHKeyWarning = true
-                    showSettings = true
+                if !isAutoLaunch && apiService.selectedSSHKeyName.isEmpty {
+                    openSettingsWindow()
                 } else {
                     apiService.toggleAutoLaunch(for: instance.instanceType.name)
                 }

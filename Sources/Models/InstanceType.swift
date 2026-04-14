@@ -57,6 +57,23 @@ struct Region: Codable, Identifiable {
     var id: String { name }
 }
 
+// MARK: - SSH Keys API
+
+struct SSHKeysResponse: Codable {
+    let data: [SSHKey]
+}
+
+struct SSHKey: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let publicKey: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case publicKey = "public_key"
+    }
+}
+
 // MARK: - Launch Instance API
 
 struct LaunchInstanceRequest: Codable {

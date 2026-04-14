@@ -3,7 +3,7 @@ import AppKit
 
 struct InstanceListView: View {
     var apiService: LambdaAPIService
-    @Binding var showSettings: Bool
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -49,7 +49,7 @@ struct InstanceListView: View {
             .accessibilityLabel("Refresh instances")
             .help("Refresh")
 
-            Button(action: { showSettings = true }) {
+            Button(action: { openSettingsWindow() }) {
                 Image(systemName: "gearshape")
                     .font(.system(size: 13))
             }
@@ -167,14 +167,14 @@ struct InstanceListView: View {
                 if !watchedInstances.isEmpty {
                     sectionHeader("Watched")
                     ForEach(watchedInstances) { instance in
-                        InstanceRowView(instance: instance, apiService: apiService, showSettings: $showSettings)
+                        InstanceRowView(instance: instance, apiService: apiService)
                     }
                 }
 
                 if !availableInstances.isEmpty {
                     sectionHeader("Available")
                     ForEach(availableInstances) { instance in
-                        InstanceRowView(instance: instance, apiService: apiService, compact: true, showSettings: $showSettings)
+                        InstanceRowView(instance: instance, apiService: apiService, compact: true)
                     }
                 }
 
@@ -184,7 +184,7 @@ struct InstanceListView: View {
                             ? "All Unavailable" : "Unavailable"
                     )
                     ForEach(unavailableInstances) { instance in
-                        InstanceRowView(instance: instance, apiService: apiService, compact: true, showSettings: $showSettings)
+                        InstanceRowView(instance: instance, apiService: apiService, compact: true)
                     }
                 }
             }
@@ -219,7 +219,7 @@ struct InstanceListView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Open Settings") { showSettings = true }
+            Button("Open Settings") { openSettingsWindow() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
         }
@@ -269,6 +269,11 @@ struct InstanceListView: View {
         }
         .padding(30)
         .frame(maxWidth: .infinity)
+    }
+
+    private func openSettingsWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "settings")
     }
 
     private var footer: some View {
