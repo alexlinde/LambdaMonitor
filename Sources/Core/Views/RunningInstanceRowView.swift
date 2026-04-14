@@ -1,9 +1,14 @@
 import SwiftUI
 import AppKit
 
-struct RunningInstanceRowView: View {
-    let instance: RunningInstance
-    var apiService: LambdaAPIService
+public struct RunningInstanceRowView: View {
+    public let instance: RunningInstance
+    public var apiService: LambdaAPIService
+
+    public init(instance: RunningInstance, apiService: LambdaAPIService) {
+        self.instance = instance
+        self.apiService = apiService
+    }
 
     private var statusColor: Color {
         switch instance.status {
@@ -43,7 +48,7 @@ struct RunningInstanceRowView: View {
         return "\(type), \(instance.status), \(region)\(ip)"
     }
 
-    var body: some View {
+    public var body: some View {
         HStack(alignment: .center, spacing: 6) {
             Image(systemName: "circle.fill")
                 .font(.system(size: 8))
@@ -185,4 +190,23 @@ struct RunningInstanceRowView: View {
         }
         .disabled(!canTerminate)
     }
+}
+
+// MARK: - Previews
+
+#Preview("Active") {
+    RunningInstanceRowView(instance: MockData.runningH100, apiService: PreviewService.populated())
+        .padding()
+}
+
+#Preview("Booting") {
+    RunningInstanceRowView(instance: MockData.bootingA100, apiService: PreviewService.populated())
+        .padding()
+}
+
+#Preview("Terminating") {
+    let service = PreviewService.populated()
+    service.terminatingInstanceIds.insert(MockData.runningH100.id)
+    return RunningInstanceRowView(instance: MockData.runningH100, apiService: service)
+        .padding()
 }

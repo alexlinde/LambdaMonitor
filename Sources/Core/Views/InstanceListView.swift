@@ -1,23 +1,38 @@
 import SwiftUI
 import AppKit
 
-struct InstanceListView: View {
-    var apiService: LambdaAPIService
+public struct InstanceListView: View {
+    public var apiService: LambdaAPIService
     @Environment(\.openWindow) private var openWindow
 
-    var body: some View {
+    public init(apiService: LambdaAPIService) {
+        self.apiService = apiService
+    }
+
+    public var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if apiService.launchState != nil {
-                launchBanner
-                Divider()
-            }
             content
             Divider()
             footer
         }
         .frame(width: 320)
+        .onChange(of: apiService.pendingAlert) { _, alert in
+            guard let alert else { return }
+            apiService.pendingAlert = nil
+            showAlert(title: alert.title, message: alert.message)
+        }
+    }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     private var header: some View {
@@ -69,62 +84,6 @@ struct InstanceListView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-    }
-
-    @ViewBuilder
-    private var launchBanner: some View {
-        if let state = apiService.launchState {
-            HStack(spacing: 6) {
-                Group {
-                    switch state {
-                    case .launching:
-                        ProgressView()
-                            .scaleEffect(0.6)
-                            .frame(width: 14, height: 14)
-                        Text("Launching \(apiService.launchInstanceTypeName ?? "instance")…")
-                            .font(.caption)
-                    case .success(let ids):
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                        Text("Launched: \(ids.first ?? "instance")")
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    case .failure(let message):
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                        Text(message)
-                            .font(.caption)
-                            .lineLimit(2)
-                    }
-                }
-
-                Spacer()
-
-                if state != .launching {
-                    Button {
-                        apiService.clearLaunchState()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Dismiss")
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(bannerColor(for: state).opacity(0.1))
-        }
-    }
-
-    private func bannerColor(for state: LaunchState) -> Color {
-        switch state {
-        case .launching: .blue
-        case .success: .green
-        case .failure: .red
-        }
     }
 
     @ViewBuilder
@@ -304,3 +263,22 @@ struct InstanceListView: View {
         .padding(.vertical, 6)
     }
 }
+
+// MARK: - Previews
+
+#Preview("Populated") {
+    InstanceListView(apiService: PreviewService.populated())
+}
+
+#Preview("Loading") {
+    InstanceListView(apiService: PreviewService.loading())
+}
+
+#Preview("Error") {
+    InstanceListView(apiService: PreviewService.error())
+}
+
+#Preview("Empty") {
+    InstanceListView(apiService: PreviewService.empty())
+}
+

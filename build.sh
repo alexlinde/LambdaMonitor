@@ -25,15 +25,24 @@ write_plist() {
     <true/>
     <key>CFBundleIconFile</key>
     <string>lambda</string>
+    <key>NSUserNotificationAlertStyle</key>
+    <string>alert</string>
 </dict>
 </plist>
 PLIST
 }
 
+MOCK_MODE=false
+if [[ "${1:-}" == "--mock-api" ]]; then
+    MOCK_MODE=true
+    shift
+fi
+
 if [[ "${1:-}" == "release" ]]; then
     swift build -c release
     PRODUCT=".build/release/LambdaMonitor"
-    codesign --force --sign "$IDENTITY" "$PRODUCT"
+    codesign --force --options runtime --entitlements Entitlements.plist \
+        --sign "$IDENTITY" "$PRODUCT"
     echo "Signed release: $PRODUCT"
 
     APP_DIR="$HOME/Applications/LambdaMonitor.app/Contents/MacOS"
@@ -43,7 +52,8 @@ if [[ "${1:-}" == "release" ]]; then
     cp -R "Resources/lambda.icon" "$APP_RES/lambda.icon"
     write_plist "$HOME/Applications/LambdaMonitor.app/Contents/Info.plist"
 
-    codesign --force --sign "$IDENTITY" "$HOME/Applications/LambdaMonitor.app"
+    codesign --force --options runtime --entitlements Entitlements.plist \
+        --sign "$IDENTITY" "$HOME/Applications/LambdaMonitor.app"
     echo "Installed: ~/Applications/LambdaMonitor.app"
     open "$HOME/Applications/LambdaMonitor.app"
 else
@@ -57,7 +67,13 @@ else
     cp -R "Resources/lambda.icon" "$APP_RESOURCES/lambda.icon"
     write_plist "$APP/Contents/Info.plist"
 
-    codesign --force --sign "$IDENTITY" "$APP"
+    codesign --force --options runtime --entitlements Entitlements.plist \
+        --sign "$IDENTITY" "$APP"
     echo "Signed: $APP"
-    exec "$APP_MACOS/LambdaMonitor"
+    if [[ "$MOCK_MODE" == true ]]; then
+        echo "Running in mock API mode"
+        exec "$APP_MACOS/LambdaMonitor" --mock-api
+    else
+        exec "$APP_MACOS/LambdaMonitor"
+    fi
 fi

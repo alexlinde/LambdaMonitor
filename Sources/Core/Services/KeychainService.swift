@@ -1,11 +1,11 @@
 import Foundation
 import Security
 
-enum KeychainService {
+public enum KeychainService {
     private static let service = "com.lambda-monitor.api-key"
     private static let account = "lambda-api-key"
 
-    static func save(apiKey: String) -> Bool {
+    public static func save(apiKey: String) -> Bool {
         guard let data = apiKey.data(using: .utf8) else { return false }
 
         delete()
@@ -21,7 +21,7 @@ enum KeychainService {
         return status == errSecSuccess
     }
 
-    static func load() -> String? {
+    public static func load() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -41,7 +41,7 @@ enum KeychainService {
     }
 
     @discardableResult
-    static func delete() -> Bool {
+    public static func delete() -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

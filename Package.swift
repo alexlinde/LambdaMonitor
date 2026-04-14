@@ -7,12 +7,22 @@ let package = Package(
         .macOS(.v15)
     ],
     targets: [
+        .target(
+            name: "LambdaMonitorCore",
+            path: "Sources/Core",
+            resources: [
+                .process("../../Resources")
+            ]
+        ),
         .executableTarget(
             name: "LambdaMonitor",
-            path: "Sources",
-            resources: [
-                .process("../Resources")
-            ]
+            dependencies: ["LambdaMonitorCore"],
+            path: "Sources/App"
+        ),
+        .testTarget(
+            name: "LambdaMonitorTests",
+            dependencies: ["LambdaMonitorCore"],
+            path: "Tests"
         )
     ]
 )

@@ -1,20 +1,26 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 
-struct SettingsView: View {
-    var apiService: LambdaAPIService
+public struct SettingsView: View {
+    public var apiService: LambdaAPIService
     @Environment(\.dismiss) private var dismiss
+
+    public init(apiService: LambdaAPIService) {
+        self.apiService = apiService
+    }
 
     @State private var apiKey: String = ""
     @State private var isTesting = false
     @State private var testResult: TestResult?
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     enum TestResult {
         case success
         case failure(String)
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(spacing: 0) {
             Form {
                 SecureField("API Key", text: $apiKey)
@@ -27,12 +33,14 @@ struct SettingsView: View {
                             }
                             .disabled(apiKey.isEmpty || isTesting)
 
-                            if KeychainService.load() != nil {
+                            if apiService.hasAPIKey {
                                 Button("Clear Key", role: .destructive) {
                                     confirmAndClearKey()
                                 }
+                                .disabled(apiService.hasAPIKeyOverride)
                             }
                         }
+                        .padding(.top, 4)
 
                         if isTesting {
                             Text("Testing…")
@@ -86,6 +94,21 @@ struct SettingsView: View {
                     }
                 }
 
+                Divider()
+
+                Toggle("Launch at Login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in
+                        do {
+                            if enabled {
+                                try SMAppService.mainApp.register()
+                            } else {
+                                try SMAppService.mainApp.unregister()
+                            }
+                        } catch {
+                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                    }
+
             }
             .formStyle(.columns)
             .padding()
@@ -105,8 +128,9 @@ struct SettingsView: View {
         .frame(width: 460)
         .fixedSize(horizontal: true, vertical: true)
         .onAppear {
-            if let existing = KeychainService.load() {
+            if let existing = apiService.resolvedAPIKey {
                 apiKey = existing
+                testAPIKey()
             }
             if apiService.sshKeys.isEmpty && apiService.hasAPIKey {
                 apiService.fetchSSHKeys()
@@ -133,7 +157,7 @@ struct SettingsView: View {
         isTesting = true
         testResult = nil
         Task {
-            let result = await LambdaAPIService.testAPIKey(apiKey)
+            let result = await apiService.testAPIKey(apiKey)
             isTesting = false
             switch result {
             case .success:
@@ -175,4 +199,14 @@ struct SettingsView: View {
             apiService.error = "No API key configured"
         }
     }
+}
+
+// MARK: - Previews
+
+#Preview("With Keys") {
+    SettingsView(apiService: PreviewService.populated())
+}
+
+#Preview("No API Key") {
+    SettingsView(apiService: PreviewService.empty())
 }
