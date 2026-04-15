@@ -3,6 +3,7 @@ set -euo pipefail
 
 IDENTITY="Developer ID Application: Alex Linde (TN7Z2D3D5R)"
 BUNDLE_ID="com.lambda-monitor"
+ICON_NAME="lambda"
 
 write_plist() {
     local plist_path="$1"
@@ -25,11 +26,24 @@ write_plist() {
     <true/>
     <key>CFBundleIconFile</key>
     <string>lambda</string>
+    <key>CFBundleIconName</key>
+    <string>lambda</string>
     <key>NSUserNotificationAlertStyle</key>
     <string>alert</string>
 </dict>
 </plist>
 PLIST
+}
+
+compile_icon() {
+    local resources_dir="$1"
+    xcrun actool \
+        --compile "$resources_dir" \
+        --platform macosx \
+        --minimum-deployment-target 15.0 \
+        --output-partial-info-plist /dev/null \
+        --app-icon "$ICON_NAME" \
+        "$PWD/Resources/$ICON_NAME.icon"
 }
 
 MOCK_MODE=false
@@ -49,7 +63,7 @@ if [[ "${1:-}" == "release" ]]; then
     APP_RES="$HOME/Applications/LambdaMonitor.app/Contents/Resources"
     mkdir -p "$APP_DIR" "$APP_RES"
     cp "$PRODUCT" "$APP_DIR/LambdaMonitor"
-    cp -R "Resources/lambda.icon" "$APP_RES/lambda.icon"
+    compile_icon "$APP_RES"
     write_plist "$HOME/Applications/LambdaMonitor.app/Contents/Info.plist"
 
     codesign --force --options runtime --entitlements Entitlements.plist \
@@ -64,7 +78,7 @@ else
     APP_RESOURCES="$APP/Contents/Resources"
     mkdir -p "$APP_MACOS" "$APP_RESOURCES"
     cp ".build/debug/LambdaMonitor" "$APP_MACOS/LambdaMonitor"
-    cp -R "Resources/lambda.icon" "$APP_RESOURCES/lambda.icon"
+    compile_icon "$APP_RESOURCES"
     write_plist "$APP/Contents/Info.plist"
 
     codesign --force --options runtime --entitlements Entitlements.plist \

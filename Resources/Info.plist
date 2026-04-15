@@ -14,5 +14,7 @@
     <string>1.0</string>
     <key>CFBundleIconFile</key>
     <string>lambda</string>
+    <key>CFBundleIconName</key>
+    <string>lambda</string>
 </dict>
 </plist>

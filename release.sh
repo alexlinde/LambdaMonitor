@@ -6,6 +6,7 @@ BUNDLE_ID="com.lambda-monitor"
 IDENTITY="Developer ID Application: Alex Linde (TN7Z2D3D5R)"
 NOTARY_PROFILE="LambdaMonitor"
 VERSION="1.0"
+ICON_NAME="lambda"
 
 STAGING=".build/release-staging"
 APP_BUNDLE="$STAGING/$APP_NAME.app"
@@ -44,6 +45,8 @@ write_plist() {
     <true/>
     <key>CFBundleIconFile</key>
     <string>lambda</string>
+    <key>CFBundleIconName</key>
+    <string>lambda</string>
     <key>NSUserNotificationAlertStyle</key>
     <string>alert</string>
 </dict>
@@ -63,7 +66,13 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 
 cp ".build/release/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-cp -R "Resources/lambda.icon" "$APP_BUNDLE/Contents/Resources/lambda.icon"
+xcrun actool \
+    --compile "$APP_BUNDLE/Contents/Resources" \
+    --platform macosx \
+    --minimum-deployment-target 15.0 \
+    --output-partial-info-plist /dev/null \
+    --app-icon "$ICON_NAME" \
+    "$PWD/Resources/$ICON_NAME.icon"
 write_plist "$APP_BUNDLE/Contents/Info.plist"
 
 # ── Codesign (hardened runtime) ────────────────────────────────────────────────
