@@ -96,6 +96,31 @@ public struct SettingsView: View {
 
                 Divider()
 
+                Picker("Default Image", selection: Binding(
+                    get: { apiService.selectedImageFamily },
+                    set: { apiService.selectedImageFamily = $0 }
+                )) {
+                    Text("Not Specified").tag("")
+                    ForEach(apiService.imageFamilies, id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
+
+                LabeledContent("") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button("Refresh") {
+                            apiService.fetchImages()
+                        }
+                        .disabled(apiService.isLoadingImages)
+
+                        Text("When unspecified, instances launch with the latest Lambda Stack image.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Divider()
+
                 Toggle("Launch at Login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
                         do {
@@ -134,6 +159,9 @@ public struct SettingsView: View {
             }
             if apiService.sshKeys.isEmpty && apiService.hasAPIKey {
                 apiService.fetchSSHKeys()
+            }
+            if apiService.images.isEmpty && apiService.hasAPIKey {
+                apiService.fetchImages()
             }
         }
     }
@@ -196,6 +224,8 @@ public struct SettingsView: View {
             apiService.instances = []
             apiService.sshKeys = []
             apiService.selectedSSHKeyName = ""
+            apiService.images = []
+            apiService.selectedImageFamily = ""
             apiService.error = "No API key configured"
         }
     }

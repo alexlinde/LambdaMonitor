@@ -90,6 +90,34 @@ public enum MockData {
         id: "ssh-key-002", name: "work-desktop", publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 user@desktop"
     )
 
+    // MARK: - Images
+
+    public static let lambdaStackImage = LambdaImage(
+        id: "43336648-096d-4cba-9aa2-f9bb7727639d",
+        createdTime: Date(timeIntervalSince1970: 1_700_000_000),
+        updatedTime: Date(timeIntervalSince1970: 1_700_000_000),
+        name: "lambda-stack-22.04",
+        description: "Lambda Stack",
+        family: "lambda-stack",
+        version: "22.04",
+        architecture: .x86_64,
+        region: usWest1
+    )
+
+    public static let ubuntuLtsImage = LambdaImage(
+        id: "11111111-2222-3333-4444-555555555555",
+        createdTime: Date(timeIntervalSince1970: 1_700_000_000),
+        updatedTime: Date(timeIntervalSince1970: 1_700_000_000),
+        name: "ubuntu-24.04.01",
+        description: "Ubuntu LTS",
+        family: "ubuntu-lts",
+        version: "24.04.01",
+        architecture: .x86_64,
+        region: usEast1
+    )
+
+    public static let mixedImages: [LambdaImage] = [lambdaStackImage, ubuntuLtsImage]
+
     // MARK: - Running Instances
 
     public static let runningH100 = RunningInstance(
@@ -222,6 +250,35 @@ public enum MockData {
     }
     """
 
+    public static let imagesJSON = """
+    {
+        "data": [
+            {
+                "id": "43336648-096d-4cba-9aa2-f9bb7727639d",
+                "created_time": "2023-11-14T22:13:20Z",
+                "updated_time": "2023-11-14T22:13:20Z",
+                "name": "lambda-stack-22.04",
+                "description": "Lambda Stack",
+                "family": "lambda-stack",
+                "version": "22.04",
+                "architecture": "x86_64",
+                "region": { "name": "us-west-1", "description": "California, USA" }
+            },
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "created_time": "2023-11-14T22:13:20Z",
+                "updated_time": "2023-11-14T22:13:20Z",
+                "name": "ubuntu-24.04.01",
+                "description": "Ubuntu LTS",
+                "family": "ubuntu-lts",
+                "version": "24.04.01",
+                "architecture": "x86_64",
+                "region": { "name": "us-east-1", "description": "Virginia, USA" }
+            }
+        ]
+    }
+    """
+
     public static let launchSuccessJSON = """
     { "data": { "instance_ids": ["i-new000001"] } }
     """
@@ -247,6 +304,7 @@ extension MockAPIClient {
         mock.instanceTypesResult = .success(MockData.mixedInstances)
         mock.runningInstancesResult = .success([MockData.runningH100])
         mock.sshKeysResult = .success([MockData.sshKey1, MockData.sshKey2])
+        mock.imagesResult = .success(MockData.mixedImages)
         mock.launchResult = .success(["i-debug-launched-001"])
         return mock
     }
@@ -298,6 +356,7 @@ public enum PreviewService {
         }
         service.runningInstances = [MockData.runningH100]
         service.sshKeys = [MockData.sshKey1, MockData.sshKey2]
+        service.images = MockData.mixedImages
         service.lastUpdated = Date()
         service.watchedTypes = ["gpu_1x_h100_sxm5"]
         return service

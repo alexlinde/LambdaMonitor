@@ -4,7 +4,14 @@ public protocol APIClient: Sendable {
     func fetchInstanceTypes(apiKey: String) async throws -> [OfferedInstanceType]
     func fetchRunningInstances(apiKey: String) async throws -> [RunningInstance]
     func fetchSSHKeys(apiKey: String) async throws -> [SSHKey]
-    func launchInstance(apiKey: String, typeName: String, regionName: String, sshKeyNames: [String]) async throws -> [String]
+    func fetchImages(apiKey: String) async throws -> [LambdaImage]
+    func launchInstance(
+        apiKey: String,
+        typeName: String,
+        regionName: String,
+        sshKeyNames: [String],
+        imageFamily: String?
+    ) async throws -> [String]
     func terminateInstance(apiKey: String, instanceIds: [String]) async throws
 }
 
@@ -39,14 +46,32 @@ public struct LiveAPIClient: APIClient {
         return decoded.data
     }
 
+    public func fetchImages(apiKey: String) async throws -> [LambdaImage] {
+        let request = Self.makeRequest(path: "/images", apiKey: apiKey)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.validateResponse(response)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(ImagesResponse.self, from: data)
+        return decoded.data
+    }
+
     public func launchInstance(
-        apiKey: String, typeName: String, regionName: String, sshKeyNames: [String]
+        apiKey: String,
+        typeName: String,
+        regionName: String,
+        sshKeyNames: [String],
+        imageFamily: String?
     ) async throws -> [String] {
         var request = Self.makeRequest(
             path: "/instance-operations/launch", apiKey: apiKey, method: "POST"
         )
         let body = LaunchInstanceRequest(
-            regionName: regionName, instanceTypeName: typeName, sshKeyNames: sshKeyNames, quantity: 1
+            regionName: regionName,
+            instanceTypeName: typeName,
+            sshKeyNames: sshKeyNames,
+            quantity: 1,
+            image: imageFamily.map { ImageSpecificationFamily(family: $0) }
         )
         request.httpBody = try JSONEncoder().encode(body)
 
@@ -122,6 +147,7 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
     public var instanceTypesResult: Result<[OfferedInstanceType], Error> = .success([])
     public var runningInstancesResult: Result<[RunningInstance], Error> = .success([])
     public var sshKeysResult: Result<[SSHKey], Error> = .success([])
+    public var imagesResult: Result<[LambdaImage], Error> = .success([])
     public var launchResult: Result<[String], Error> = .success(["i-mock-00000001"])
     public var terminateResult: Result<Void, Error> = .success(())
 
@@ -130,6 +156,7 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
     public var launchCallCount = 0
     public var lastLaunchedTypeName: String?
     public var lastLaunchedRegion: String?
+    public var lastLaunchedImageFamily: String?
     public var terminateCallCount = 0
     public var lastTerminatedIds: [String]?
 
@@ -157,13 +184,23 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
         return try sshKeysResult.get()
     }
 
+    public func fetchImages(apiKey: String) async throws -> [LambdaImage] {
+        if delay > .zero { try await Task.sleep(for: delay) }
+        return try imagesResult.get()
+    }
+
     public func launchInstance(
-        apiKey: String, typeName: String, regionName: String, sshKeyNames: [String]
+        apiKey: String,
+        typeName: String,
+        regionName: String,
+        sshKeyNames: [String],
+        imageFamily: String?
     ) async throws -> [String] {
         if delay > .zero { try await Task.sleep(for: delay) }
         launchCallCount += 1
         lastLaunchedTypeName = typeName
         lastLaunchedRegion = regionName
+        lastLaunchedImageFamily = imageFamily
         return try launchResult.get()
     }
 

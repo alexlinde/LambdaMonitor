@@ -18,6 +18,7 @@ private func cleanupTestState() {
     UserDefaults.standard.removeObject(forKey: "watchedInstanceTypes")
     UserDefaults.standard.removeObject(forKey: "autoLaunchInstanceTypes")
     UserDefaults.standard.removeObject(forKey: "sshKeyName")
+    UserDefaults.standard.removeObject(forKey: "imageFamily")
 }
 
 @Suite("LambdaAPIService", .serialized)
@@ -129,6 +130,76 @@ struct LambdaAPIServiceTests {
         #expect(service.selectedSSHKeyName == "my-laptop")
     }
 
+    // MARK: - Images
+
+    @Test("fetchImages() populates images and derives sorted unique families")
+    @MainActor
+    func fetchImagesPopulates() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        let extraLambdaStack = LambdaImage(
+            id: "lambda-stack-other-region",
+            createdTime: Date(timeIntervalSince1970: 0),
+            updatedTime: Date(timeIntervalSince1970: 0),
+            name: "lambda-stack-22.04",
+            description: "Lambda Stack",
+            family: "lambda-stack",
+            version: "22.04",
+            architecture: .x86_64,
+            region: MockData.usEast1
+        )
+        mock.imagesResult = .success([MockData.ubuntuLtsImage, MockData.lambdaStackImage, extraLambdaStack])
+
+        service.fetchImages()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(service.images.count == 3)
+        #expect(service.imageFamilies == ["lambda-stack", "ubuntu-lts"])
+        #expect(!service.isLoadingImages)
+    }
+
+    @Test("fetchImages() resets selection if family no longer exists")
+    @MainActor
+    func fetchImagesResetsMissingSelection() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        service.selectedImageFamily = "no-longer-exists"
+        mock.imagesResult = .success([MockData.lambdaStackImage])
+
+        service.fetchImages()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(service.selectedImageFamily == "")
+    }
+
+    @Test("fetchImages() preserves selection when family still present")
+    @MainActor
+    func fetchImagesPreservesValidSelection() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        service.selectedImageFamily = "ubuntu-lts"
+        mock.imagesResult = .success(MockData.mixedImages)
+
+        service.fetchImages()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(service.selectedImageFamily == "ubuntu-lts")
+    }
+
+    @Test("selectedImageFamily persists via UserDefaults")
+    @MainActor
+    func selectedImageFamilyPersists() async throws {
+        let (service, _) = setUpTestService()
+        defer { cleanupTestState() }
+
+        service.selectedImageFamily = "ubuntu-lts"
+        #expect(UserDefaults.standard.string(forKey: "imageFamily") == "ubuntu-lts")
+        #expect(service.selectedImageFamily == "ubuntu-lts")
+    }
+
     // MARK: - Watch / Auto-launch
 
     @Test("toggleWatch adds and removes types")
@@ -187,7 +258,7 @@ struct LambdaAPIServiceTests {
         mock.launchResult = .success(["i-new-001"])
         mock.instanceTypesResult = .success([])
         mock.runningInstancesResult = .success([])
-        UserDefaults.standard.set("my-laptop", forKey: "sshKeyName")
+        service.selectedSSHKeyName = "my-laptop"
 
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
         #expect(service.launchingTypeNames.contains("gpu_1x_h100_sxm5"))
@@ -199,6 +270,43 @@ struct LambdaAPIServiceTests {
         #expect(mock.launchCallCount == 1)
         #expect(mock.lastLaunchedTypeName == "gpu_1x_h100_sxm5")
         #expect(mock.lastLaunchedRegion == "us-west-1")
+        #expect(mock.lastLaunchedImageFamily == nil)
+    }
+
+    @Test("launchInstance() forwards selected image family when set")
+    @MainActor
+    func launchForwardsImageFamily() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.launchResult = .success(["i-new-002"])
+        mock.instanceTypesResult = .success([])
+        mock.runningInstancesResult = .success([])
+        service.selectedSSHKeyName = "my-laptop"
+        service.selectedImageFamily = "ubuntu-lts"
+
+        service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(mock.lastLaunchedImageFamily == "ubuntu-lts")
+    }
+
+    @Test("launchInstance() sends nil image family when default selected")
+    @MainActor
+    func launchSendsNilForDefaultImage() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.launchResult = .success(["i-new-003"])
+        mock.instanceTypesResult = .success([])
+        mock.runningInstancesResult = .success([])
+        service.selectedSSHKeyName = "my-laptop"
+        service.selectedImageFamily = ""
+
+        service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(mock.lastLaunchedImageFamily == nil)
     }
 
     @Test("launchInstance() shows alert on error")
@@ -208,7 +316,7 @@ struct LambdaAPIServiceTests {
         defer { cleanupTestState() }
 
         mock.launchResult = .failure(APIError.serverError("No capacity"))
-        UserDefaults.standard.set("my-laptop", forKey: "sshKeyName")
+        service.selectedSSHKeyName = "my-laptop"
 
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
         try await Task.sleep(for: .milliseconds(100))
@@ -225,7 +333,7 @@ struct LambdaAPIServiceTests {
         let (service, mock) = setUpTestService()
         defer { cleanupTestState() }
 
-        UserDefaults.standard.set("", forKey: "sshKeyName")
+        service.selectedSSHKeyName = ""
 
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
 
@@ -279,7 +387,7 @@ struct LambdaAPIServiceTests {
         let (service, mock) = setUpTestService()
         defer { cleanupTestState() }
 
-        UserDefaults.standard.set("my-laptop", forKey: "sshKeyName")
+        service.selectedSSHKeyName = "my-laptop"
 
         let h100Unavailable = OfferedInstanceType(
             instanceType: MockData.h100x1Info,

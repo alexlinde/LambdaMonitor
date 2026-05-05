@@ -140,6 +140,57 @@ struct ModelTests {
         #expect(json["instance_type_name"] as? String == "gpu_1x_h100_sxm5")
         #expect(json["ssh_key_names"] as? [String] == ["my-key"])
         #expect(json["quantity"] as? Int == 1)
+        #expect(json["image"] == nil)
+    }
+
+    @Test("Encode launch request omits image when nil")
+    func encodeLaunchRequestWithoutImage() throws {
+        let request = LaunchInstanceRequest(
+            regionName: "us-west-1",
+            instanceTypeName: "gpu_1x_h100_sxm5",
+            sshKeyNames: ["my-key"],
+            quantity: 1,
+            image: nil
+        )
+        let data = try JSONEncoder().encode(request)
+        let jsonString = try #require(String(data: data, encoding: .utf8))
+        #expect(!jsonString.contains("\"image\""))
+    }
+
+    @Test("Encode launch request includes image family when set")
+    func encodeLaunchRequestWithImage() throws {
+        let request = LaunchInstanceRequest(
+            regionName: "us-west-1",
+            instanceTypeName: "gpu_1x_h100_sxm5",
+            sshKeyNames: ["my-key"],
+            quantity: 1,
+            image: ImageSpecificationFamily(family: "ubuntu-lts")
+        )
+        let data = try JSONEncoder().encode(request)
+        let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let imageObj = try #require(json["image"] as? [String: Any])
+        #expect(imageObj["family"] as? String == "ubuntu-lts")
+    }
+
+    // MARK: - Images
+
+    @Test("Decode images response")
+    func decodeImages() throws {
+        let data = Data(MockData.imagesJSON.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let response = try decoder.decode(ImagesResponse.self, from: data)
+
+        #expect(response.data.count == 2)
+        let lambdaStack = try #require(response.data.first { $0.family == "lambda-stack" })
+        #expect(lambdaStack.name == "lambda-stack-22.04")
+        #expect(lambdaStack.version == "22.04")
+        #expect(lambdaStack.architecture == .x86_64)
+        #expect(lambdaStack.region.name == "us-west-1")
+
+        let ubuntu = try #require(response.data.first { $0.family == "ubuntu-lts" })
+        #expect(ubuntu.name == "ubuntu-24.04.01")
+        #expect(ubuntu.architecture == .x86_64)
     }
 
     @Test("Encode terminate request preserves snake_case keys")

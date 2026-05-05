@@ -160,6 +160,79 @@ struct LiveAPIClientTests {
         #expect(capturedContentType == "application/json")
         #expect(capturedBody?["region_name"] as? String == "us-west-1")
         #expect(capturedBody?["instance_type_name"] as? String == "gpu_1x_h100_sxm5")
+        #expect(capturedBody?["image"] == nil)
+    }
+
+    @Test("POST launch request includes image family when provided")
+    func launchRequestWithImageFamily() async throws {
+        let session = makeSession()
+        var capturedBody: [String: Any]?
+
+        MockURLProtocol.handlers["/api/v1/instance-operations/launch"] = { request in
+            if let body = request.httpBody ?? request.httpBodyStream.flatMap({ stream in
+                stream.open()
+                let data = NSMutableData()
+                let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 4096)
+                defer { buffer.deallocate() }
+                while stream.hasBytesAvailable {
+                    let count = stream.read(buffer, maxLength: 4096)
+                    if count > 0 { data.append(buffer, length: count) }
+                }
+                stream.close()
+                return data as Data
+            }) {
+                capturedBody = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let data = Data(MockData.launchSuccessJSON.utf8)
+            let response = makeResponse(url: request.url!, statusCode: 200)
+            return (data, response)
+        }
+
+        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/instance-operations/launch")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer test-key", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body = LaunchInstanceRequest(
+            regionName: "us-west-1",
+            instanceTypeName: "gpu_1x_h100_sxm5",
+            sshKeyNames: ["my-key"],
+            quantity: 1,
+            image: ImageSpecificationFamily(family: "ubuntu-lts")
+        )
+        request.httpBody = try JSONEncoder().encode(body)
+
+        _ = try await session.data(for: request)
+
+        let imageObj = try #require(capturedBody?["image"] as? [String: Any])
+        #expect(imageObj["family"] as? String == "ubuntu-lts")
+    }
+
+    @Test("Images endpoint decodes correctly")
+    func imagesEndpointDecode() async throws {
+        let session = makeSession()
+
+        MockURLProtocol.handlers["/api/v1/images"] = { request in
+            let data = Data(MockData.imagesJSON.utf8)
+            let response = makeResponse(url: request.url!, statusCode: 200)
+            return (data, response)
+        }
+
+        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/images")!
+        var request = URLRequest(url: url)
+        request.setValue("Bearer test-key", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await session.data(for: request)
+        let httpResponse = try #require(response as? HTTPURLResponse)
+        #expect(httpResponse.statusCode == 200)
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(ImagesResponse.self, from: data)
+        #expect(decoded.data.count == 2)
+        #expect(decoded.data.contains { $0.family == "lambda-stack" })
+        #expect(decoded.data.contains { $0.family == "ubuntu-lts" })
     }
 
     @Test("Server error response is parseable")

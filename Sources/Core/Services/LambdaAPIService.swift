@@ -8,6 +8,7 @@ public final class LambdaAPIService {
         static let watchedTypes = "watchedInstanceTypes"
         static let autoLaunchTypes = "autoLaunchInstanceTypes"
         static let sshKeyName = "sshKeyName"
+        static let imageFamily = "imageFamily"
     }
 
     public var instances: [OfferedInstanceType] = []
@@ -19,11 +20,31 @@ public final class LambdaAPIService {
     public var sshKeys: [SSHKey] = []
     public var isLoadingSSHKeys = false
 
+    public var images: [LambdaImage] = []
+    public var isLoadingImages = false
+
+    public var imageFamilies: [String] {
+        let families = Set(images.map(\.family))
+        return families.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     public var launchingTypeNames: Set<String> = []
     public var terminatingInstanceIds: Set<String> = []
     public var pendingAlert: AlertInfo?
     public var watchedTypes: Set<String>
     public var autoLaunchTypes: Set<String>
+
+    public var selectedSSHKeyName: String {
+        didSet {
+            UserDefaults.standard.set(selectedSSHKeyName, forKey: DefaultsKey.sshKeyName)
+        }
+    }
+
+    public var selectedImageFamily: String {
+        didSet {
+            UserDefaults.standard.set(selectedImageFamily, forKey: DefaultsKey.imageFamily)
+        }
+    }
 
     private var timerTask: Task<Void, Never>?
     private let refreshInterval: TimeInterval = 30
@@ -38,6 +59,8 @@ public final class LambdaAPIService {
         self.apiKeyOverride = apiKeyOverride
         watchedTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.watchedTypes) ?? [])
         autoLaunchTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.autoLaunchTypes) ?? [])
+        selectedSSHKeyName = UserDefaults.standard.string(forKey: DefaultsKey.sshKeyName) ?? ""
+        selectedImageFamily = UserDefaults.standard.string(forKey: DefaultsKey.imageFamily) ?? ""
     }
 
     public var hasAPIKey: Bool {
@@ -53,17 +76,13 @@ public final class LambdaAPIService {
         apiKeyOverride != nil
     }
 
-    public var selectedSSHKeyName: String {
-        get { UserDefaults.standard.string(forKey: DefaultsKey.sshKeyName) ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: DefaultsKey.sshKeyName) }
-    }
-
     // MARK: - Auto-refresh
 
     public func startAutoRefresh() {
         timerTask?.cancel()
         fetch()
         fetchSSHKeys()
+        fetchImages()
         timerTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(refreshInterval))
@@ -150,6 +169,28 @@ public final class LambdaAPIService {
         }
     }
 
+    // MARK: - Images
+
+    public func fetchImages() {
+        guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else { return }
+
+        isLoadingImages = true
+        Task {
+            do {
+                let fetched = try await client.fetchImages(apiKey: apiKey)
+                self.images = fetched
+                let families = Set(fetched.map(\.family))
+                if !self.selectedImageFamily.isEmpty,
+                   !families.contains(self.selectedImageFamily) {
+                    self.selectedImageFamily = ""
+                }
+            } catch {
+                // Image fetch failures are non-critical
+            }
+            self.isLoadingImages = false
+        }
+    }
+
     // MARK: - Launch Instance
 
     public func launchInstance(typeName: String, regionName: String, autoLaunched: Bool = false, displayName: String? = nil) {
@@ -169,13 +210,16 @@ public final class LambdaAPIService {
 
         launchingTypeNames.insert(typeName)
 
+        let imageFamily = selectedImageFamily.isEmpty ? nil : selectedImageFamily
+
         Task {
             do {
                 let instanceIds = try await client.launchInstance(
                     apiKey: apiKey,
                     typeName: typeName,
                     regionName: regionName,
-                    sshKeyNames: [selectedSSHKeyName]
+                    sshKeyNames: [selectedSSHKeyName],
+                    imageFamily: imageFamily
                 )
                 if autoLaunched {
                     let name = displayName ?? typeName

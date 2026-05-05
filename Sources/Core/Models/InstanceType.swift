@@ -111,6 +111,69 @@ public struct SSHKey: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+// MARK: - Images API
+
+public enum ImageArchitecture: String, Codable, Sendable {
+    case x86_64
+    case arm64
+}
+
+public struct LambdaImage: Codable, Identifiable, Sendable {
+    public let id: String
+    public let createdTime: Date
+    public let updatedTime: Date
+    public let name: String
+    public let description: String
+    public let family: String
+    public let version: String
+    public let architecture: ImageArchitecture
+    public let region: Region
+
+    public init(
+        id: String,
+        createdTime: Date,
+        updatedTime: Date,
+        name: String,
+        description: String,
+        family: String,
+        version: String,
+        architecture: ImageArchitecture,
+        region: Region
+    ) {
+        self.id = id
+        self.createdTime = createdTime
+        self.updatedTime = updatedTime
+        self.name = name
+        self.description = description
+        self.family = family
+        self.version = version
+        self.architecture = architecture
+        self.region = region
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description, family, version, architecture, region
+        case createdTime = "created_time"
+        case updatedTime = "updated_time"
+    }
+}
+
+public struct ImagesResponse: Codable, Sendable {
+    public let data: [LambdaImage]
+
+    public init(data: [LambdaImage]) {
+        self.data = data
+    }
+}
+
+public struct ImageSpecificationFamily: Codable, Sendable, Equatable {
+    public let family: String
+
+    public init(family: String) {
+        self.family = family
+    }
+}
+
 // MARK: - Launch Instance API
 
 public struct LaunchInstanceRequest: Codable, Sendable {
@@ -118,12 +181,20 @@ public struct LaunchInstanceRequest: Codable, Sendable {
     public let instanceTypeName: String
     public let sshKeyNames: [String]
     public let quantity: Int
+    public let image: ImageSpecificationFamily?
 
-    public init(regionName: String, instanceTypeName: String, sshKeyNames: [String], quantity: Int) {
+    public init(
+        regionName: String,
+        instanceTypeName: String,
+        sshKeyNames: [String],
+        quantity: Int,
+        image: ImageSpecificationFamily? = nil
+    ) {
         self.regionName = regionName
         self.instanceTypeName = instanceTypeName
         self.sshKeyNames = sshKeyNames
         self.quantity = quantity
+        self.image = image
     }
 
     enum CodingKeys: String, CodingKey {
@@ -131,6 +202,7 @@ public struct LaunchInstanceRequest: Codable, Sendable {
         case instanceTypeName = "instance_type_name"
         case sshKeyNames = "ssh_key_names"
         case quantity
+        case image
     }
 }
 
