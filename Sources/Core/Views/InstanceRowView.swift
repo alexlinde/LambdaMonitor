@@ -221,22 +221,10 @@ public struct InstanceRowView: View {
         alert.addButton(withTitle: "Launch")
         alert.addButton(withTitle: "Cancel")
 
-        let container = NSStackView()
-        container.orientation = .vertical
-        container.alignment = .leading
-        container.spacing = 8
-
         let regionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
         for region in regions {
             regionPopup.addItem(withTitle: region.description)
             regionPopup.lastItem?.representedObject = region.name
-        }
-        if regions.count > 1 {
-            let label = NSTextField(labelWithString: "Region:")
-            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            let row = NSStackView(views: [label, regionPopup])
-            row.spacing = 6
-            container.addArrangedSubview(row)
         }
 
         let keyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -246,15 +234,31 @@ public struct InstanceRowView: View {
         if let selected = keys.firstIndex(where: { $0.name == apiService.selectedSSHKeyName }) {
             keyPopup.selectItem(at: selected)
         }
+
+        let labelColumnWidth: CGFloat = 70
+        let popupWidth: CGFloat = 220
+        let containerWidth: CGFloat = labelColumnWidth + 8 + popupWidth
+
+        let container = NSStackView()
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 8
+
+        if regions.count > 1 {
+            container.addArrangedSubview(
+                makeFormRow(label: "Region:", control: regionPopup,
+                            labelWidth: labelColumnWidth, controlWidth: popupWidth)
+            )
+        }
         if keys.count > 1 {
-            let label = NSTextField(labelWithString: "SSH Key:")
-            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            let row = NSStackView(views: [label, keyPopup])
-            row.spacing = 6
-            container.addArrangedSubview(row)
+            container.addArrangedSubview(
+                makeFormRow(label: "SSH Key:", control: keyPopup,
+                            labelWidth: labelColumnWidth, controlWidth: popupWidth)
+            )
         }
 
-        container.setFrameSize(container.fittingSize)
+        let fitting = container.fittingSize
+        container.setFrameSize(NSSize(width: max(containerWidth, fitting.width), height: fitting.height))
         alert.accessoryView = container
 
         NSApp.activate(ignoringOtherApps: true)
@@ -272,6 +276,23 @@ public struct InstanceRowView: View {
             typeName: instance.instanceType.name,
             regionName: selectedRegion
         )
+    }
+
+    private func makeFormRow(
+        label text: String, control: NSView, labelWidth: CGFloat, controlWidth: CGFloat
+    ) -> NSStackView {
+        let label = NSTextField(labelWithString: text)
+        label.alignment = .right
+        label.setFrameSize(NSSize(width: labelWidth, height: label.fittingSize.height))
+        label.setContentHuggingPriority(.required, for: .horizontal)
+
+        control.setFrameSize(NSSize(width: controlWidth, height: control.fittingSize.height))
+
+        let row = NSStackView(views: [label, control])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 8
+        return row
     }
 
     private var autoLaunchToggle: some View {

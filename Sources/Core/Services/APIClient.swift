@@ -164,6 +164,11 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
     /// Allows responses to change between fetches for simulation scenarios.
     public var onFetchInstanceTypes: ((String) async throws -> [OfferedInstanceType])?
 
+    /// When set, called after a successful launch with the launched type/region.
+    /// Allows simulation factories to mutate `runningInstancesResult` so the new
+    /// instance appears on the next fetch.
+    public var onLaunchInstance: ((_ typeName: String, _ regionName: String) -> Void)?
+
     public init() {}
 
     public func fetchInstanceTypes(apiKey: String) async throws -> [OfferedInstanceType] {
@@ -201,7 +206,9 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
         lastLaunchedTypeName = typeName
         lastLaunchedRegion = regionName
         lastLaunchedImageFamily = imageFamily
-        return try launchResult.get()
+        let result = try launchResult.get()
+        onLaunchInstance?(typeName, regionName)
+        return result
     }
 
     public func terminateInstance(apiKey: String, instanceIds: [String]) async throws {
@@ -209,5 +216,9 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
         terminateCallCount += 1
         lastTerminatedIds = instanceIds
         try terminateResult.get()
+        if case .success(let existing) = runningInstancesResult {
+            let toRemove = Set(instanceIds)
+            runningInstancesResult = .success(existing.filter { !toRemove.contains($0.id) })
+        }
     }
 }
