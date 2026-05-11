@@ -4,6 +4,7 @@ import AppKit
 public struct RunningInstanceRowView: View {
     public let instance: RunningInstance
     public var apiService: LambdaAPIService
+    @State private var terminateConfirmationPresented = false
 
     public init(instance: RunningInstance, apiService: LambdaAPIService) {
         self.instance = instance
@@ -102,6 +103,23 @@ public struct RunningInstanceRowView: View {
         .contextMenu { contextMenuContent }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityDescription)
+        .confirmationDialog(
+            "Terminate Instance?",
+            isPresented: $terminateConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Terminate", role: .destructive) {
+                apiService.terminateInstance(
+                    id: instance.id,
+                    description: instance.instanceType.description
+                )
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "This will terminate your \(instance.instanceType.description) in \(instance.region.description). You will be billed for usage up to this point."
+            )
+        }
     }
 
     @ViewBuilder
@@ -112,7 +130,7 @@ public struct RunningInstanceRowView: View {
                 .frame(height: 16)
         } else if canTerminate {
             Button {
-                confirmAndTerminate()
+                terminateConfirmationPresented = true
             } label: {
                 Text("Terminate")
                     .font(.caption2)
@@ -124,23 +142,6 @@ public struct RunningInstanceRowView: View {
             Text(instance.status.capitalized)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    private func confirmAndTerminate() {
-        let alert = NSAlert()
-        alert.messageText = "Terminate Instance?"
-        alert.informativeText = "This will terminate your \(instance.instanceType.description) in \(instance.region.description). You will be billed for usage up to this point."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Terminate")
-        alert.addButton(withTitle: "Cancel")
-        alert.buttons.first?.hasDestructiveAction = true
-
-        if alert.runModal() == .alertFirstButtonReturn {
-            apiService.terminateInstance(
-                id: instance.id,
-                description: instance.instanceType.description
-            )
         }
     }
 
@@ -184,7 +185,7 @@ public struct RunningInstanceRowView: View {
         }
 
         Button(role: .destructive) {
-            confirmAndTerminate()
+            terminateConfirmationPresented = true
         } label: {
             Label("Terminate Instance…", systemImage: "stop.fill")
         }

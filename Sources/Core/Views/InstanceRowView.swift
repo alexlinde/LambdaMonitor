@@ -6,6 +6,7 @@ public struct InstanceRowView: View {
     public var apiService: LambdaAPIService
     public var compact: Bool = false
     @Environment(\.openWindow) private var openWindow
+    @State private var launchConfigurationPresented = false
 
     public init(instance: OfferedInstanceType, apiService: LambdaAPIService, compact: Bool = false) {
         self.instance = instance
@@ -66,6 +67,13 @@ public struct InstanceRowView: View {
         .contextMenu { contextMenuContent }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityDescription)
+        .sheet(isPresented: $launchConfigurationPresented) {
+            LaunchConfigurationSheet(
+                instance: instance,
+                apiService: apiService,
+                isPresented: $launchConfigurationPresented
+            )
+        }
     }
 
     private var watchedContent: some View {
@@ -206,93 +214,7 @@ public struct InstanceRowView: View {
             return
         }
 
-        showLaunchDialog()
-    }
-
-    private func showLaunchDialog() {
-        let regions = instance.regionsWithCapacityAvailable
-        let keys = apiService.sshKeys
-
-        let alert = NSAlert()
-        alert.messageText = "Launch \(instance.instanceType.description)"
-        alert.informativeText = instance.instanceType.formattedPrice
-        alert.alertStyle = .informational
-        alert.icon = NSImage(size: .zero)
-        alert.addButton(withTitle: "Launch")
-        alert.addButton(withTitle: "Cancel")
-
-        let regionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        for region in regions {
-            regionPopup.addItem(withTitle: region.description)
-            regionPopup.lastItem?.representedObject = region.name
-        }
-
-        let keyPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-        for key in keys {
-            keyPopup.addItem(withTitle: key.name)
-        }
-        if let selected = keys.firstIndex(where: { $0.name == apiService.selectedSSHKeyName }) {
-            keyPopup.selectItem(at: selected)
-        }
-
-        let labelColumnWidth: CGFloat = 70
-        let popupWidth: CGFloat = 220
-        let containerWidth: CGFloat = labelColumnWidth + 8 + popupWidth
-
-        let container = NSStackView()
-        container.orientation = .vertical
-        container.alignment = .leading
-        container.spacing = 8
-
-        if regions.count > 1 {
-            container.addArrangedSubview(
-                makeFormRow(label: "Region:", control: regionPopup,
-                            labelWidth: labelColumnWidth, controlWidth: popupWidth)
-            )
-        }
-        if keys.count > 1 {
-            container.addArrangedSubview(
-                makeFormRow(label: "SSH Key:", control: keyPopup,
-                            labelWidth: labelColumnWidth, controlWidth: popupWidth)
-            )
-        }
-
-        let fitting = container.fittingSize
-        container.setFrameSize(NSSize(width: max(containerWidth, fitting.width), height: fitting.height))
-        alert.accessoryView = container
-
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        let selectedRegion = regionPopup.selectedItem?.representedObject as? String
-            ?? regions.first?.name ?? ""
-        let selectedKey = keyPopup.titleOfSelectedItem ?? apiService.selectedSSHKeyName
-
-        if !selectedKey.isEmpty {
-            apiService.selectedSSHKeyName = selectedKey
-        }
-
-        apiService.launchInstance(
-            typeName: instance.instanceType.name,
-            regionName: selectedRegion
-        )
-    }
-
-    private func makeFormRow(
-        label text: String, control: NSView, labelWidth: CGFloat, controlWidth: CGFloat
-    ) -> NSStackView {
-        let label = NSTextField(labelWithString: text)
-        label.alignment = .right
-        label.setFrameSize(NSSize(width: labelWidth, height: label.fittingSize.height))
-        label.setContentHuggingPriority(.required, for: .horizontal)
-
-        control.setFrameSize(NSSize(width: controlWidth, height: control.fittingSize.height))
-
-        let row = NSStackView(views: [label, control])
-        row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 8
-        return row
+        launchConfigurationPresented = true
     }
 
     private var autoLaunchToggle: some View {
@@ -355,6 +277,83 @@ public struct InstanceRowView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Launch sheet (SwiftUI avoids NSAlert.runModal issues in MenuBarExtra panels)
+
+private struct LaunchConfigurationSheet: View {
+    let instance: OfferedInstanceType
+    var apiService: LambdaAPIService
+    @Binding var isPresented: Bool
+
+    @State private var selectedRegionName: String
+    @State private var selectedKeyName: String
+
+    init(instance: OfferedInstanceType, apiService: LambdaAPIService, isPresented: Binding<Bool>) {
+        self.instance = instance
+        self.apiService = apiService
+        self._isPresented = isPresented
+        let regions = instance.regionsWithCapacityAvailable
+        _selectedRegionName = State(initialValue: regions.first?.name ?? "")
+        let keys = apiService.sshKeys
+        let stored = apiService.selectedSSHKeyName
+        let initialKey: String
+        if !stored.isEmpty, keys.contains(where: { $0.name == stored }) {
+            initialKey = stored
+        } else {
+            initialKey = keys.first?.name ?? ""
+        }
+        _selectedKeyName = State(initialValue: initialKey)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Launch \(instance.instanceType.description)")
+                .font(.headline)
+            Text(instance.instanceType.formattedPrice)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Form {
+                if instance.regionsWithCapacityAvailable.count > 1 {
+                    Picker("Region", selection: $selectedRegionName) {
+                        ForEach(instance.regionsWithCapacityAvailable) { region in
+                            Text(region.description).tag(region.name)
+                        }
+                    }
+                }
+                if apiService.sshKeys.count > 1 {
+                    Picker("SSH Key", selection: $selectedKeyName) {
+                        ForEach(apiService.sshKeys) { key in
+                            Text(key.name).tag(key.name)
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .frame(maxWidth: .infinity)
+
+            HStack {
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Launch") {
+                    if !selectedKeyName.isEmpty {
+                        apiService.selectedSSHKeyName = selectedKeyName
+                    }
+                    apiService.launchInstance(
+                        typeName: instance.instanceType.name,
+                        regionName: selectedRegionName
+                    )
+                    isPresented = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedRegionName.isEmpty || selectedKeyName.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 300)
     }
 }
 
