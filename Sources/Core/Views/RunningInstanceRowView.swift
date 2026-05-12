@@ -101,8 +101,9 @@ public struct RunningInstanceRowView: View {
         .padding(.horizontal, 4)
         .contentShape(Rectangle())
         .contextMenu { contextMenuContent }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
+        .accessibilityIdentifier("running-row-\(instance.id)")
         .confirmationDialog(
             "Terminate Instance?",
             isPresented: $terminateConfirmationPresented,
@@ -128,6 +129,7 @@ public struct RunningInstanceRowView: View {
             ProgressView()
                 .scaleEffect(0.5)
                 .frame(height: 16)
+                .accessibilityIdentifier("terminate-progress-\(instance.id)")
         } else if canTerminate {
             Button {
                 terminateConfirmationPresented = true
@@ -138,6 +140,7 @@ public struct RunningInstanceRowView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .help("Terminate instance")
+            .accessibilityIdentifier("terminate-button-\(instance.id)")
         } else {
             Text(instance.status.capitalized)
                 .font(.caption2)

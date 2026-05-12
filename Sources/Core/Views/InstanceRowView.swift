@@ -65,8 +65,9 @@ public struct InstanceRowView: View {
         .opacity(instance.isAvailable || isWatched ? 1.0 : 0.6)
         .contentShape(Rectangle())
         .contextMenu { contextMenuContent }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
+        .accessibilityIdentifier("instance-row-\(instance.instanceType.name)")
         .sheet(isPresented: $launchConfigurationPresented) {
             LaunchConfigurationSheet(
                 instance: instance,
@@ -167,6 +168,7 @@ public struct InstanceRowView: View {
         .padding(.top, 2)
         .help(isWatched ? "Stop watching" : "Watch for availability")
         .accessibilityLabel(isWatched ? "Stop watching" : "Watch for availability")
+        .accessibilityIdentifier("watch-toggle-\(instance.instanceType.name)")
     }
 
     private var needsLaunchDialog: Bool {
@@ -179,6 +181,7 @@ public struct InstanceRowView: View {
             ProgressView()
                 .scaleEffect(0.5)
                 .frame(height: 16)
+                .accessibilityIdentifier("launch-progress-\(instance.instanceType.name)")
         } else {
             Button("Launch") {
                 launchOrShowDialog()
@@ -189,6 +192,7 @@ public struct InstanceRowView: View {
             .fixedSize()
             .disabled(!instance.isAvailable || !apiService.launchingTypeNames.isEmpty)
             .help(instance.isAvailable ? "Launch instance" : "Unavailable")
+            .accessibilityIdentifier("launch-button-\(instance.instanceType.name)")
         }
     }
 
@@ -322,6 +326,7 @@ private struct LaunchConfigurationSheet: View {
                             Text(region.description).tag(region.name)
                         }
                     }
+                    .accessibilityIdentifier("launch-sheet-region")
                 }
                 if apiService.sshKeys.count > 1 {
                     Picker("SSH Key", selection: $selectedKeyName) {
@@ -329,6 +334,7 @@ private struct LaunchConfigurationSheet: View {
                             Text(key.name).tag(key.name)
                         }
                     }
+                    .accessibilityIdentifier("launch-sheet-ssh-key")
                 }
             }
             .formStyle(.grouped)
@@ -337,6 +343,7 @@ private struct LaunchConfigurationSheet: View {
             HStack {
                 Button("Cancel") { isPresented = false }
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("launch-sheet-cancel")
                 Spacer()
                 Button("Launch") {
                     if !selectedKeyName.isEmpty {
@@ -350,10 +357,14 @@ private struct LaunchConfigurationSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(selectedRegionName.isEmpty || selectedKeyName.isEmpty)
+                .accessibilityIdentifier("launch-sheet-confirm")
             }
         }
         .padding(20)
         .frame(minWidth: 300)
+        // No `.accessibilityIdentifier` at the sheet root: SwiftUI propagates
+        // a root identifier down to descendants and overrides the per-control
+        // identifiers (`launch-sheet-confirm`, etc.) tests need to query.
     }
 }
 

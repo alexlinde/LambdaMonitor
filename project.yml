@@ -1,0 +1,108 @@
+# XcodeGen spec for LambdaMonitor.xcodeproj
+#
+# This project hosts the Mac App target alongside a UI Testing Bundle. UI tests
+# require a proper Xcode UI Test target type, which SwiftPM cannot produce, so
+# we keep this project committed next to the existing Package.swift.
+#
+# Sources are referenced directly out of `Sources/` so the same .swift files
+# back both `swift build` and `xcodebuild`. To regenerate the project after
+# adding/removing files, run `xcodegen generate`.
+
+name: LambdaMonitor
+options:
+  bundleIdPrefix: com.lambda-monitor
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "15.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    # Sign with the same Developer ID Application identity that build.sh uses.
+    # Ad-hoc signing makes Gatekeeper reject the bundle when Launch Services
+    # registers it during `xcodebuild build/test`, producing an "app is broken
+    # and should be deleted" popup. Falling back to ad-hoc if the cert is
+    # missing is handled by the CODE_SIGN_IDENTITY[sdk=*] override below.
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: TN7Z2D3D5R
+    CODE_SIGN_IDENTITY: "Developer ID Application"
+    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGNING_ALLOWED: "YES"
+    OTHER_CODE_SIGN_FLAGS: "--timestamp=none"
+    SWIFT_STRICT_CONCURRENCY: complete
+
+targets:
+  LambdaMonitorCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources/Core
+    settings:
+      base:
+        PRODUCT_NAME: LambdaMonitorCore
+        PRODUCT_BUNDLE_IDENTIFIER: com.lambda-monitor.core
+        GENERATE_INFOPLIST_FILE: "YES"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        DEFINES_MODULE: "YES"
+        SKIP_INSTALL: "YES"
+
+  LambdaMonitor:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources/App
+      - path: Resources
+        type: folder
+        buildPhase:
+          copyFiles:
+            destination: resources
+    dependencies:
+      - target: LambdaMonitorCore
+        embed: true
+    settings:
+      base:
+        PRODUCT_NAME: LambdaMonitor
+        PRODUCT_BUNDLE_IDENTIFIER: com.lambda-monitor
+        INFOPLIST_KEY_CFBundleDisplayName: Lambda Monitor
+        # Intentionally not setting LSUIElement here. build.sh sets it for
+        # release/dev builds so the Dock icon is hidden, but in the xcodeproj
+        # we leave it off so XCUITest can see the window's accessibility tree.
+        # The runtime AppDelegate still calls setActivationPolicy(.accessory)
+        # except under --ui-test, so production behavior matches build.sh.
+        INFOPLIST_KEY_LSMinimumSystemVersion: "14.0"
+        GENERATE_INFOPLIST_FILE: "YES"
+        ENABLE_HARDENED_RUNTIME: "NO"
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
+  LambdaMonitorUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Tests/UI
+    dependencies:
+      - target: LambdaMonitor
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lambda-monitor.uitests
+        TEST_TARGET_NAME: LambdaMonitor
+        GENERATE_INFOPLIST_FILE: "YES"
+
+schemes:
+  LambdaMonitor:
+    build:
+      targets:
+        LambdaMonitorCore: all
+        LambdaMonitor: all
+        LambdaMonitorUITests: [test]
+    run:
+      config: Debug
+      executable: LambdaMonitor
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - LambdaMonitorUITests

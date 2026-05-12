@@ -22,7 +22,7 @@ let package = Package(
         .testTarget(
             name: "LambdaMonitorTests",
             dependencies: ["LambdaMonitorCore"],
-            path: "Tests"
+            path: "Tests/Unit"
         )
     ]
 )

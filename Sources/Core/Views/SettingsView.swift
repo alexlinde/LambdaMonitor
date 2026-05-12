@@ -24,6 +24,7 @@ public struct SettingsView: View {
         VStack(spacing: 0) {
             Form {
                 SecureField("API Key", text: $apiKey)
+                    .accessibilityIdentifier("settings-api-key-field")
 
                 LabeledContent("") {
                     VStack(alignment: .leading, spacing: 4) {
@@ -32,12 +33,14 @@ public struct SettingsView: View {
                                 testAPIKey()
                             }
                             .disabled(apiKey.isEmpty || isTesting)
+                            .accessibilityIdentifier("settings-test-button")
 
                             if apiService.hasAPIKey {
                                 Button("Clear Key", role: .destructive) {
                                     confirmAndClearKey()
                                 }
                                 .disabled(apiService.hasAPIKeyOverride)
+                                .accessibilityIdentifier("settings-clear-button")
                             }
                         }
                         .padding(.top, 4)
@@ -147,11 +150,15 @@ public struct SettingsView: View {
                     done()
                 }
                 .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("settings-done-button")
             }
             .padding()
         }
         .frame(width: 460)
         .fixedSize(horizontal: true, vertical: true)
+        // No `.accessibilityIdentifier` here: a root identifier propagates to
+        // every descendant in SwiftUI, overriding per-control identifiers like
+        // `settings-api-key-field` that tests query.
         .onAppear {
             if let existing = apiService.resolvedAPIKey {
                 apiKey = existing

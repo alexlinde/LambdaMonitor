@@ -309,6 +309,65 @@ extension MockAPIClient {
         return mock
     }
 
+    /// Deterministic mock for UI tests. Unlike `autoLaunchDemo`, every fetch
+    /// returns the same instance types, so tests don't race fetch counters.
+    /// A multi-region available type drives the launch sheet, an active running
+    /// instance drives terminate flows, and `onLaunchInstance` appends new
+    /// running instances so end-to-end launch can be observed in the UI.
+    public static func uiTest() -> MockAPIClient {
+        let mock = MockAPIClient()
+        mock.instanceTypesResult = .success([
+            MockData.h100x1Available,
+            MockData.a6000Available,
+            MockData.a100x1Unavailable,
+        ])
+        mock.runningInstancesResult = .success([MockData.runningH100])
+        mock.sshKeysResult = .success([MockData.sshKey1, MockData.sshKey2])
+        mock.imagesResult = .success(MockData.mixedImages)
+        mock.launchResult = .success(["i-uitest-launched-001"])
+
+        let knownInfos: [String: InstanceTypeInfo] = [
+            MockData.h100x1Info.name: MockData.h100x1Info,
+            MockData.h100x8Info.name: MockData.h100x8Info,
+            MockData.a100x1Info.name: MockData.a100x1Info,
+            MockData.a6000Info.name: MockData.a6000Info,
+            MockData.h200x1Info.name: MockData.h200x1Info,
+        ]
+        let knownRegions: [String: Region] = [
+            MockData.usWest1.name: MockData.usWest1,
+            MockData.usEast1.name: MockData.usEast1,
+            MockData.euWest1.name: MockData.euWest1,
+            MockData.asiaNortheast1.name: MockData.asiaNortheast1,
+        ]
+
+        var launchSequence = 0
+        mock.onLaunchInstance = { [weak mock] typeName, regionName in
+            guard let mock,
+                  let info = knownInfos[typeName],
+                  let region = knownRegions[regionName] else { return }
+
+            launchSequence += 1
+            let new = RunningInstance(
+                id: String(format: "i-uitest%08x", launchSequence),
+                name: nil,
+                status: "active",
+                region: region,
+                instanceType: info,
+                hostname: "uitest-\(typeName).cloud.lambdalabs.com",
+                ip: "10.0.0.\(launchSequence % 254 + 1)",
+                sshKeyNames: ["my-laptop"],
+                fileSystemNames: [],
+                jupyterToken: nil,
+                jupyterUrl: nil
+            )
+            if case .success(let existing) = mock.runningInstancesResult {
+                mock.runningInstancesResult = .success(existing + [new])
+            }
+        }
+
+        return mock
+    }
+
     /// Creates a mock client that simulates an instance type becoming available
     /// after `fetchesBeforeAvailable` refresh cycles. The A100 starts unavailable
     /// and flips to available, triggering auto-launch if configured.

@@ -9,9 +9,45 @@ struct LambdaMonitorApp: App {
     @State private var apiService: LambdaAPIService
     @State private var hasStarted = false
 
+    /// Cached at process startup so the scene body and `AppDelegate` agree on
+    /// whether to expose the UI-test window and skip notification permission.
+    static let isUITest: Bool = {
+        #if DEBUG
+        return CommandLine.arguments.contains("--ui-test")
+        #else
+        return false
+        #endif
+    }()
+
     init() {
         #if DEBUG
-        if CommandLine.arguments.contains("--mock-api") {
+        if Self.isUITest {
+            // Clear persisted state so each UI-test launch starts from the
+            // same known baseline (no watched/auto-launch types, no stale
+            // SSH/image selections leaking across runs).
+            for key in [
+                "watchedInstanceTypes",
+                "autoLaunchInstanceTypes",
+                "selectedSSHKeyName",
+                "selectedImageFamily",
+            ] {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+            let service = LambdaAPIService(
+                client: MockAPIClient.uiTest(),
+                apiKeyOverride: "ui-test-key"
+            )
+            service.selectedSSHKeyName = "my-laptop"
+            // Pre-watch H100 so its row renders in the always-expanded
+            // "Watched" section and its `Launch` button is visible without a
+            // hover (compact AVAILABLE rows hide their launch button until
+            // the row is hovered, which is awkward in XCUITest).
+            service.watchedTypes = ["gpu_1x_h100_sxm5"]
+            _apiService = State(initialValue: service)
+            MainActor.assumeIsolated {
+                UITestServiceHolder.service = service
+            }
+        } else if CommandLine.arguments.contains("--mock-api") {
             let service = LambdaAPIService(
                 client: MockAPIClient.autoLaunchDemo(),
                 apiKeyOverride: "mock-api-key"
@@ -51,12 +87,69 @@ struct LambdaMonitorApp: App {
     }
 }
 
+#if DEBUG
+/// MainActor-isolated singleton handing the running `LambdaAPIService` to the
+/// `AppDelegate` so it can host the same service in a UI-test window.
+@MainActor
+enum UITestServiceHolder {
+    static var service: LambdaAPIService?
+}
+#endif
+
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    private var uiTestWindow: NSWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        let isUITest = LambdaMonitorApp.isUITest
+
+        // Under UI tests we promote the app to a regular activation policy so
+        // XCUITest can drive a normal window; we also skip notification
+        // permission so no system sheet blocks automation.
+        NSApp.setActivationPolicy(isUITest ? .regular : .accessory)
         UNUserNotificationCenter.current().delegate = self
-        LambdaAPIService.requestNotificationPermission()
+        if !isUITest {
+            LambdaAPIService.requestNotificationPermission()
+        }
+
+        #if DEBUG
+        if isUITest, let service = UITestServiceHolder.service {
+            DispatchQueue.main.async { [weak self] in
+                self?.presentUITestWindow(apiService: service)
+            }
+        }
+        #endif
     }
+
+    #if DEBUG
+    @MainActor
+    private func presentUITestWindow(apiService: LambdaAPIService) {
+        // Intentionally no `.accessibilityIdentifier` at the root: SwiftUI
+        // propagates a root identifier down to every descendant, overriding
+        // the specific identifiers (`refresh-button`, `launch-button-...`,
+        // etc.) that tests need to query by.
+        let content = InstanceListView(apiService: apiService)
+            .frame(width: 320, height: 480)
+            .task { @MainActor in
+                if apiService.hasAPIKey {
+                    apiService.startAutoRefresh()
+                }
+            }
+        let hosting = NSHostingView(rootView: content)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 480),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Lambda Monitor (UI Test)"
+        window.contentView = hosting
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        uiTestWindow = window
+
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    #endif
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,

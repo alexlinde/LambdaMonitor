@@ -62,6 +62,7 @@ public struct InstanceListView: View {
             .keyboardShortcut("r", modifiers: .command)
             .disabled(apiService.isLoading)
             .accessibilityLabel("Refresh instances")
+            .accessibilityIdentifier("refresh-button")
             .help("Refresh")
 
             Button(action: { openSettingsWindow() }) {
@@ -71,6 +72,7 @@ public struct InstanceListView: View {
             .buttonStyle(.plain)
             .keyboardShortcut(",", modifiers: .command)
             .accessibilityLabel("Settings")
+            .accessibilityIdentifier("settings-button")
             .help("Settings")
 
             Button(action: { NSApplication.shared.terminate(nil) }) {
@@ -80,6 +82,7 @@ public struct InstanceListView: View {
             .buttonStyle(.plain)
             .keyboardShortcut("q", modifiers: .command)
             .accessibilityLabel("Quit")
+            .accessibilityIdentifier("quit-button")
             .help("Quit")
         }
         .padding(.horizontal, 12)
@@ -165,6 +168,8 @@ public struct InstanceListView: View {
         .padding(.horizontal, 4)
         .padding(.top, 6)
         .padding(.bottom, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("section-header-\(title.lowercased())")
     }
 
     private var noKeyView: some View {

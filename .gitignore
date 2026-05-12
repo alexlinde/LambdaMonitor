@@ -1,6 +1,10 @@
 .build/
 .swiftpm/
 *.xcodeproj/
+# Keep the committed LambdaMonitor.xcodeproj (used to host the XCUITest target;
+# regenerable via `xcodegen generate` from project.yml).
+!/LambdaMonitor.xcodeproj/
+LambdaMonitor.xcodeproj/xcuserdata/
 xcuserdata/
 DerivedData/
 .DS_Store
