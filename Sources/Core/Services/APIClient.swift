@@ -20,11 +20,42 @@ public protocol APIClient: Sendable {
 public struct LiveAPIClient: APIClient {
     private static let baseURL = "https://cloud.lambdalabs.com/api/v1"
 
-    public init() {}
+    /// Builds the configuration used by the production session. Exposed at
+    /// package level so tests can verify the cookie-isolation settings.
+    ///
+    /// Why disable cookies? `cloud.lambdalabs.com` returns a `sessionid` cookie
+    /// on every response (it's the same origin as the web dashboard). If we used
+    /// `URLSession.shared`, that cookie would be stored in
+    /// `HTTPCookieStorage.shared` and re-sent on subsequent requests. Lambda's
+    /// backend then treats those requests as session-authenticated and requires
+    /// a CSRF token for state-changing POSTs, producing "Missing or invalid
+    /// CSRF token" on launch/terminate. Disabling cookies entirely ensures the
+    /// API only ever sees Bearer auth.
+    static func makeURLSessionConfiguration() -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.default
+        config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
+        config.httpCookieStorage = nil
+        return config
+    }
+
+    private static let defaultSession = URLSession(configuration: makeURLSessionConfiguration())
+
+    private let session: URLSession
+
+    public init() {
+        self.session = Self.defaultSession
+    }
+
+    /// Test-only initializer that lets tests route requests through a mock
+    /// `URLProtocol`. Production code uses the parameterless `init()`.
+    init(session: URLSession) {
+        self.session = session
+    }
 
     public func fetchInstanceTypes(apiKey: String) async throws -> [OfferedInstanceType] {
         let request = Self.makeRequest(path: "/instance-types", apiKey: apiKey)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Self.validateResponse(response)
         let decoded = try JSONDecoder().decode(LambdaAPIResponse.self, from: data)
         return Array(decoded.data.values)
@@ -32,7 +63,7 @@ public struct LiveAPIClient: APIClient {
 
     public func fetchRunningInstances(apiKey: String) async throws -> [RunningInstance] {
         let request = Self.makeRequest(path: "/instances", apiKey: apiKey)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Self.validateResponse(response)
         let decoded = try JSONDecoder().decode(RunningInstancesResponse.self, from: data)
         return decoded.data
@@ -40,7 +71,7 @@ public struct LiveAPIClient: APIClient {
 
     public func fetchSSHKeys(apiKey: String) async throws -> [SSHKey] {
         let request = Self.makeRequest(path: "/ssh-keys", apiKey: apiKey)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Self.validateResponse(response)
         let decoded = try JSONDecoder().decode(SSHKeysResponse.self, from: data)
         return decoded.data
@@ -48,7 +79,7 @@ public struct LiveAPIClient: APIClient {
 
     public func fetchImages(apiKey: String) async throws -> [LambdaImage] {
         let request = Self.makeRequest(path: "/images", apiKey: apiKey)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         try Self.validateResponse(response)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -75,7 +106,7 @@ public struct LiveAPIClient: APIClient {
         )
         request.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
@@ -101,7 +132,7 @@ public struct LiveAPIClient: APIClient {
         let body = TerminateInstanceRequest(instanceIds: instanceIds)
         request.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
@@ -156,6 +187,7 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
     public var launchCallCount = 0
     public var lastLaunchedTypeName: String?
     public var lastLaunchedRegion: String?
+    public var lastLaunchedSSHKeyNames: [String]?
     public var lastLaunchedImageFamily: String?
     public var terminateCallCount = 0
     public var lastTerminatedIds: [String]?
@@ -205,6 +237,7 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
         launchCallCount += 1
         lastLaunchedTypeName = typeName
         lastLaunchedRegion = regionName
+        lastLaunchedSSHKeyNames = sshKeyNames
         lastLaunchedImageFamily = imageFamily
         let result = try launchResult.get()
         onLaunchInstance?(typeName, regionName)

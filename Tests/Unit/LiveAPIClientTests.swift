@@ -48,10 +48,10 @@ struct LiveAPIClientTests {
         return URLSession(configuration: config)
     }
 
-    // The LiveAPIClient uses URLSession.shared, so we test the URL construction
-    // and error mapping by injecting a mock URLProtocol. However, since
-    // LiveAPIClient currently uses URLSession.shared directly, these tests
-    // validate the protocol and data flow patterns.
+    // LiveAPIClient uses a dedicated URLSession with cookies disabled
+    // (to avoid Lambda's `sessionid` cookie triggering CSRF checks on POSTs).
+    // These tests verify the URL construction, request shape, and error mapping
+    // by routing a separate session through a mock URLProtocol.
 
     @Test("MockURLProtocol intercepts and returns configured response")
     func protocolInterception() async throws {
@@ -264,5 +264,61 @@ struct LiveAPIClientTests {
         #expect(APIError.unauthorized.localizedDescription == "Invalid API key")
         #expect(APIError.httpError(500).localizedDescription == "HTTP error 500")
         #expect(APIError.serverError("Out of GPUs").localizedDescription == "Out of GPUs")
+    }
+
+    // MARK: - Cookie isolation (regression for "Missing or invalid CSRF token")
+
+    /// The production URLSession configuration must disable cookies so Lambda's
+    /// `sessionid` cookie cannot leak between requests and trigger Django's
+    /// CSRF check on POSTs.
+    @Test("Production session configuration disables cookies")
+    func sessionConfigDisablesCookies() {
+        let config = LiveAPIClient.makeURLSessionConfiguration()
+        #expect(config.httpCookieAcceptPolicy == .never)
+        #expect(config.httpShouldSetCookies == false)
+        #expect(config.httpCookieStorage == nil)
+    }
+
+    /// End-to-end regression: even when a prior GET response tries to set a
+    /// `sessionid` cookie, the subsequent POST launch must not send any
+    /// `Cookie` header. Otherwise Lambda's backend treats the request as
+    /// session-authenticated and rejects it with "Missing or invalid CSRF token".
+    @Test("Launch POST never carries cookies after a Set-Cookie response")
+    func liveClientDoesNotSendCookies() async throws {
+        let config = LiveAPIClient.makeURLSessionConfiguration()
+        config.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = LiveAPIClient(session: session)
+
+        MockURLProtocol.handlers["/api/v1/instance-types"] = { request in
+            #expect(request.value(forHTTPHeaderField: "Cookie") == nil)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Set-Cookie": "sessionid=should-not-leak; Path=/; HttpOnly"]
+            )!
+            return (Data(MockData.instanceTypesJSON.utf8), response)
+        }
+
+        var launchSawCookie: String?
+        MockURLProtocol.handlers["/api/v1/instance-operations/launch"] = { request in
+            launchSawCookie = request.value(forHTTPHeaderField: "Cookie")
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+            )!
+            return (Data(MockData.launchSuccessJSON.utf8), response)
+        }
+
+        _ = try await client.fetchInstanceTypes(apiKey: "test")
+        _ = try await client.launchInstance(
+            apiKey: "test",
+            typeName: "gpu_1x_h100_sxm5",
+            regionName: "us-west-1",
+            sshKeyNames: ["my-key"],
+            imageFamily: nil
+        )
+
+        #expect(launchSawCookie == nil, "POST must not carry sessionid cookie (would trigger CSRF check)")
     }
 }

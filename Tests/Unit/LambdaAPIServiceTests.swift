@@ -270,7 +270,25 @@ struct LambdaAPIServiceTests {
         #expect(mock.launchCallCount == 1)
         #expect(mock.lastLaunchedTypeName == "gpu_1x_h100_sxm5")
         #expect(mock.lastLaunchedRegion == "us-west-1")
+        #expect(mock.lastLaunchedSSHKeyNames == ["my-laptop"])
         #expect(mock.lastLaunchedImageFamily == nil)
+    }
+
+    @Test("launchInstance() forwards selected SSH key as a single-element array")
+    @MainActor
+    func launchForwardsSSHKey() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.launchResult = .success(["i-new-ssh"])
+        mock.instanceTypesResult = .success([])
+        mock.runningInstancesResult = .success([])
+        service.selectedSSHKeyName = "alex-macbook"
+
+        service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(mock.lastLaunchedSSHKeyNames == ["alex-macbook"])
     }
 
     @Test("launchInstance() forwards selected image family when set")
@@ -288,6 +306,7 @@ struct LambdaAPIServiceTests {
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
         try await Task.sleep(for: .milliseconds(200))
 
+        #expect(mock.lastLaunchedSSHKeyNames == ["my-laptop"])
         #expect(mock.lastLaunchedImageFamily == "ubuntu-lts")
     }
 
@@ -411,6 +430,7 @@ struct LambdaAPIServiceTests {
 
         #expect(mock.launchCallCount == 1)
         #expect(mock.lastLaunchedTypeName == "gpu_1x_h100_sxm5")
+        #expect(mock.lastLaunchedSSHKeyNames == ["my-laptop"])
         #expect(!service.isAutoLaunch("gpu_1x_h100_sxm5"))
     }
 
