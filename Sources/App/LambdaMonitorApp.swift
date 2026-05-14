@@ -7,7 +7,6 @@ import LambdaMonitorCore
 struct LambdaMonitorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var apiService: LambdaAPIService
-    @State private var hasStarted = false
 
     /// Cached at process startup so the scene body and `AppDelegate` agree on
     /// whether to expose the UI-test window and skip notification permission.
@@ -20,6 +19,7 @@ struct LambdaMonitorApp: App {
     }()
 
     init() {
+        let service: LambdaAPIService
         #if DEBUG
         if Self.isUITest {
             // Clear persisted state so each UI-test launch starts from the
@@ -33,7 +33,7 @@ struct LambdaMonitorApp: App {
             ] {
                 UserDefaults.standard.removeObject(forKey: key)
             }
-            let service = LambdaAPIService(
+            service = LambdaAPIService(
                 client: MockAPIClient.uiTest(),
                 apiKeyOverride: "ui-test-key"
             )
@@ -43,37 +43,40 @@ struct LambdaMonitorApp: App {
             // hover (compact AVAILABLE rows hide their launch button until
             // the row is hovered, which is awkward in XCUITest).
             service.watchedTypes = ["gpu_1x_h100_sxm5"]
-            _apiService = State(initialValue: service)
             MainActor.assumeIsolated {
                 UITestServiceHolder.service = service
             }
         } else if CommandLine.arguments.contains("--mock-api") {
-            let service = LambdaAPIService(
+            service = LambdaAPIService(
                 client: MockAPIClient.autoLaunchDemo(),
                 apiKeyOverride: "mock-api-key"
             )
             service.watchedTypes = ["gpu_1x_a100_sxm4"]
             service.autoLaunchTypes = ["gpu_1x_a100_sxm4"]
             service.selectedSSHKeyName = "my-laptop"
-            _apiService = State(initialValue: service)
         } else {
-            _apiService = State(initialValue: LambdaAPIService())
+            service = LambdaAPIService()
         }
         #else
-        _apiService = State(initialValue: LambdaAPIService())
+        service = LambdaAPIService()
         #endif
+
+        _apiService = State(initialValue: service)
+        // Hand the service to `AppDelegate` so it can begin polling in
+        // `applicationDidFinishLaunching`, before the menu-bar popover is
+        // ever opened. Without this, the popover's `.task` is the first
+        // thing to call `startAutoRefresh()` — and with
+        // `.menuBarExtraStyle(.window)` that view is built lazily on first
+        // click, leaving the menu-bar icon's running-count badge stale on
+        // cold launch.
+        MainActor.assumeIsolated {
+            AppServiceHolder.service = service
+        }
     }
 
     var body: some Scene {
         MenuBarExtra {
             InstanceListView(apiService: apiService)
-                .task {
-                    guard !hasStarted else { return }
-                    hasStarted = true
-                    if apiService.hasAPIKey {
-                        apiService.startAutoRefresh()
-                    }
-                }
         } label: {
             MenuBarLabel(apiService: apiService)
         }
@@ -85,6 +88,14 @@ struct LambdaMonitorApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.center)
     }
+}
+
+/// MainActor-isolated singleton that hands the running `LambdaAPIService` to
+/// `AppDelegate`, so polling can start at process launch rather than waiting
+/// for the user to open the menu-bar popover.
+@MainActor
+enum AppServiceHolder {
+    static var service: LambdaAPIService?
 }
 
 #if DEBUG
@@ -109,6 +120,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().delegate = self
         if !isUITest {
             LambdaAPIService.requestNotificationPermission()
+        }
+
+        // Kick off polling immediately at process launch so the menu-bar
+        // icon reflects running-instance count and watched-availability on
+        // cold start — without this the first poll wouldn't run until the
+        // user opened the popover. UI tests have their own bootstrap via
+        // `presentUITestWindow`.
+        if !isUITest, let service = AppServiceHolder.service, service.hasAPIKey {
+            service.startAutoRefresh()
         }
 
         #if DEBUG

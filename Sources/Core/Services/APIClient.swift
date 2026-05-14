@@ -184,6 +184,8 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
 
     public var delay: Duration = .zero
 
+    public var fetchInstanceTypesCallCount = 0
+    public var fetchRunningInstancesCallCount = 0
     public var launchCallCount = 0
     public var lastLaunchedTypeName: String?
     public var lastLaunchedRegion: String?
@@ -205,6 +207,7 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
 
     public func fetchInstanceTypes(apiKey: String) async throws -> [OfferedInstanceType] {
         if delay > .zero { try await Task.sleep(for: delay) }
+        fetchInstanceTypesCallCount += 1
         if let handler = onFetchInstanceTypes {
             return try await handler(apiKey)
         }
@@ -213,6 +216,7 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
 
     public func fetchRunningInstances(apiKey: String) async throws -> [RunningInstance] {
         if delay > .zero { try await Task.sleep(for: delay) }
+        fetchRunningInstancesCallCount += 1
         return try runningInstancesResult.get()
     }
 

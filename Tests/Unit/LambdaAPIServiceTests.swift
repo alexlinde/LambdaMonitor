@@ -97,6 +97,37 @@ struct LambdaAPIServiceTests {
         #expect(service.runningInstances.isEmpty)
     }
 
+    // MARK: - Cold-launch polling
+
+    /// Regression: with `.menuBarExtraStyle(.window)` the popover content is
+    /// built lazily, so historically nothing fetched running instances until
+    /// the user clicked the menu-bar icon. `AppDelegate` now calls
+    /// `startAutoRefresh()` at process launch — this test pins the contract
+    /// that the entry point fetches *running* instances (not just instance
+    /// types) so the menu-bar icon's running-count badge is accurate on cold
+    /// launch.
+    @Test("startAutoRefresh() immediately polls running instances")
+    @MainActor
+    func startAutoRefreshPollsRunningInstancesAtLaunch() async throws {
+        let (service, mock) = setUpTestService()
+        defer {
+            service.stopAutoRefresh()
+            cleanupTestState()
+        }
+
+        mock.instanceTypesResult = .success(MockData.mixedInstances)
+        mock.runningInstancesResult = .success([MockData.runningH100])
+
+        service.startAutoRefresh()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(mock.fetchRunningInstancesCallCount >= 1)
+        #expect(mock.fetchInstanceTypesCallCount >= 1)
+        #expect(service.runningInstances.count == 1)
+        #expect(service.runningInstances.first?.id == MockData.runningH100.id)
+        #expect(service.lastUpdated != nil)
+    }
+
     // MARK: - SSH Keys
 
     @Test("fetchSSHKeys() populates and sorts keys")
