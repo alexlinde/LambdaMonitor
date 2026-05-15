@@ -191,9 +191,7 @@ private struct MenuBarLabel: View {
     var apiService: LambdaAPIService
 
     var body: some View {
-        let isDisconnected = !apiService.hasAPIKey
-            || apiService.isOffline
-            || (apiService.error != nil && apiService.instances.isEmpty)
+        let isDisconnected = !apiService.hasAPIKey || apiService.error != nil
         let watchedAvailable = apiService.instances.contains { instance in
             instance.isAvailable && apiService.watchedTypes.contains(instance.instanceType.name)
         }

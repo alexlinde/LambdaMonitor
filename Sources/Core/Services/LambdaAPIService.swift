@@ -15,7 +15,6 @@ public final class LambdaAPIService {
     public var runningInstances: [RunningInstance] = []
     public var lastUpdated: Date?
     public var error: String?
-    public var isOffline = false
     public var isLoading = false
 
     public var sshKeys: [SSHKey] = []
@@ -123,7 +122,6 @@ public final class LambdaAPIService {
                 }
                 self.lastUpdated = Date()
                 self.error = nil
-                self.isOffline = false
 
                 let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
                 if self.hasCompletedInitialFetch && !self.selectedSSHKeyName.isEmpty {
@@ -139,7 +137,6 @@ public final class LambdaAPIService {
                 self.previousAvailableTypes = currentlyAvailable
                 self.hasCompletedInitialFetch = true
             } catch {
-                self.isOffline = Self.isNetworkConnectivityError(error)
                 self.error = error.localizedDescription
             }
 
@@ -300,24 +297,6 @@ public final class LambdaAPIService {
 
     public func isAutoLaunch(_ typeName: String) -> Bool {
         autoLaunchTypes.contains(typeName)
-    }
-
-    private static func isNetworkConnectivityError(_ error: Error) -> Bool {
-        guard let urlError = error as? URLError else { return false }
-        switch urlError.code {
-        case .notConnectedToInternet,
-             .networkConnectionLost,
-             .cannotConnectToHost,
-             .cannotFindHost,
-             .dnsLookupFailed,
-             .timedOut,
-             .internationalRoamingOff,
-             .callIsActive,
-             .dataNotAllowed:
-            return true
-        default:
-            return false
-        }
     }
 
     private func disableAutoLaunch(for typeName: String) {
