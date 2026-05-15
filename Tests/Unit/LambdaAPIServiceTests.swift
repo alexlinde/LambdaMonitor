@@ -429,6 +429,90 @@ struct LambdaAPIServiceTests {
         #expect(service.pendingAlert?.message.contains("Cannot terminate") == true)
     }
 
+    // MARK: - Offline / Network Connectivity
+
+    @Test("fetch() sets isOffline on network connectivity error")
+    @MainActor
+    func fetchSetsIsOfflineOnNetworkError() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.instanceTypesResult = .failure(URLError(.notConnectedToInternet))
+        mock.runningInstancesResult = .success([])
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(service.isOffline)
+        #expect(service.error != nil)
+    }
+
+    /// Regression: when instances are already cached from a prior successful
+    /// fetch, losing connectivity sets `isOffline` regardless of the non-empty
+    /// `instances` array. The old check (`error != nil && instances.isEmpty`)
+    /// would have left the icon as `cloud` instead of `icloud.slash`.
+    @Test("fetch() sets isOffline even when instances are already cached")
+    @MainActor
+    func fetchSetsIsOfflineWithCachedInstances() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.instanceTypesResult = .success(MockData.mixedInstances)
+        mock.runningInstancesResult = .success([])
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(!service.instances.isEmpty)
+        #expect(!service.isOffline)
+
+        mock.instanceTypesResult = .failure(URLError(.networkConnectionLost))
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(!service.instances.isEmpty, "cached instances must be preserved")
+        #expect(service.isOffline, "isOffline must be true even though instances is non-empty")
+    }
+
+    @Test("fetch() clears isOffline on successful recovery")
+    @MainActor
+    func fetchClearsIsOfflineOnRecovery() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.instanceTypesResult = .failure(URLError(.notConnectedToInternet))
+        mock.runningInstancesResult = .success([])
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(service.isOffline)
+
+        mock.instanceTypesResult = .success(MockData.mixedInstances)
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(!service.isOffline)
+        #expect(service.error == nil)
+    }
+
+    @Test("fetch() does NOT set isOffline for non-network API errors")
+    @MainActor
+    func fetchDoesNotSetIsOfflineForAPIErrors() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.instanceTypesResult = .failure(APIError.unauthorized)
+        mock.runningInstancesResult = .success([])
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(!service.isOffline)
+        #expect(service.error != nil)
+    }
+
     // MARK: - Auto-launch Detection
 
     @Test("Auto-launch triggers when watched type becomes newly available")

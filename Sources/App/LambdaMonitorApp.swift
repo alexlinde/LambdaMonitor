@@ -192,6 +192,7 @@ private struct MenuBarLabel: View {
 
     var body: some View {
         let isDisconnected = !apiService.hasAPIKey
+            || apiService.isOffline
             || (apiService.error != nil && apiService.instances.isEmpty)
         let watchedAvailable = apiService.instances.contains { instance in
             instance.isAvailable && apiService.watchedTypes.contains(instance.instanceType.name)
@@ -281,7 +282,7 @@ private struct MenuBarLabel: View {
 
         let label = countLabel(for: runningCount)
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10, weight: .heavy),
+            .font: NSFont.systemFont(ofSize: 9, weight: .heavy),
             .foregroundColor: NSColor.black,
         ]
         let attrString = NSAttributedString(string: label, attributes: attrs)
