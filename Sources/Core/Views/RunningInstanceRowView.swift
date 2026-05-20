@@ -104,21 +104,11 @@ public struct RunningInstanceRowView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityIdentifier("running-row-\(instance.id)")
-        .confirmationDialog(
-            "Terminate Instance?",
-            isPresented: $terminateConfirmationPresented,
-            titleVisibility: .visible
-        ) {
-            Button("Terminate", role: .destructive) {
-                apiService.terminateInstance(
-                    id: instance.id,
-                    description: instance.instanceType.description
-                )
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(
-                "This will terminate your \(instance.instanceType.description) in \(instance.region.description). You will be billed for usage up to this point."
+        .sheet(isPresented: $terminateConfirmationPresented) {
+            TerminateConfirmationSheet(
+                instance: instance,
+                apiService: apiService,
+                isPresented: $terminateConfirmationPresented
             )
         }
     }
@@ -193,6 +183,61 @@ public struct RunningInstanceRowView: View {
             Label("Terminate Instance…", systemImage: "stop.fill")
         }
         .disabled(!canTerminate)
+    }
+}
+
+// MARK: - Terminate sheet
+//
+// `.confirmationDialog` inside a `MenuBarExtra` panel (`.menuBarExtraStyle(.window)`)
+// dismisses the popover when the destructive button is clicked, and the
+// button's action is dropped on the floor while the dialog stays stuck in
+// its presented state. Using a SwiftUI `.sheet` instead — same pattern as
+// `LaunchConfigurationSheet` — keeps the dialog tied to the popover and
+// fires the action reliably.
+
+private struct TerminateConfirmationSheet: View {
+    let instance: RunningInstance
+    var apiService: LambdaAPIService
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Terminate Instance?")
+                .font(.headline)
+            Text(
+                "This will terminate your \(instance.instanceType.description) in \(instance.region.description). You will be billed for usage up to this point."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("terminate-sheet-cancel")
+                Spacer()
+                // Intentionally NOT `role: .destructive`. Inside a SwiftUI
+                // sheet hosted by `MenuBarExtra` (`.menuBarExtraStyle(.window)`)
+                // a destructive button triggers an automatic dismissal that
+                // collapses the menu-bar panel before this action closure
+                // runs — the panel loses focus, the row view is torn down,
+                // and `terminateInstance` is never called while
+                // `isPresented` stays stuck at `true` (so the sheet appears
+                // to reappear on next open). Plain Button + tint avoids that.
+                Button("Terminate") {
+                    apiService.terminateInstance(
+                        id: instance.id,
+                        description: instance.instanceType.description
+                    )
+                    isPresented = false
+                }
+                .tint(.red)
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("terminate-sheet-confirm")
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 320, maxWidth: 360)
     }
 }
 
