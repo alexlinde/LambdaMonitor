@@ -87,6 +87,24 @@ struct LambdaMonitorApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+
+        // Launch + terminate dialogs live in dedicated Window scenes rather
+        // than `.sheet`s inside the MenuBarExtra popover. The popover is a
+        // transient panel that collapses on resign-key (i.e. on the very
+        // button click that should confirm the action), which drops the
+        // action and hides the progress spinner. Real windows are stable.
+        // See DIALOG.md.
+        Window("Launch Instance", id: "launch") {
+            LaunchWindowView(apiService: apiService)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+
+        Window("Terminate Instance", id: "terminate") {
+            TerminateWindowView(apiService: apiService)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 

@@ -184,6 +184,12 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
 
     public var delay: Duration = .zero
 
+    /// Optional separate delay for the mutating launch/terminate calls. When
+    /// set, these operations sleep for this duration instead of `delay`. UI
+    /// tests use this to keep the progress spinner on screen long enough for
+    /// XCUITest to observe it, without slowing down the (frequent) fetch calls.
+    public var operationDelay: Duration?
+
     public var fetchInstanceTypesCallCount = 0
     public var fetchRunningInstancesCallCount = 0
     public var launchCallCount = 0
@@ -237,7 +243,8 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
         sshKeyNames: [String],
         imageFamily: String?
     ) async throws -> [String] {
-        if delay > .zero { try await Task.sleep(for: delay) }
+        let opDelay = operationDelay ?? delay
+        if opDelay > .zero { try await Task.sleep(for: opDelay) }
         launchCallCount += 1
         lastLaunchedTypeName = typeName
         lastLaunchedRegion = regionName
@@ -249,7 +256,8 @@ public final class MockAPIClient: APIClient, @unchecked Sendable {
     }
 
     public func terminateInstance(apiKey: String, instanceIds: [String]) async throws {
-        if delay > .zero { try await Task.sleep(for: delay) }
+        let opDelay = operationDelay ?? delay
+        if opDelay > .zero { try await Task.sleep(for: opDelay) }
         terminateCallCount += 1
         lastTerminatedIds = instanceIds
         try terminateResult.get()

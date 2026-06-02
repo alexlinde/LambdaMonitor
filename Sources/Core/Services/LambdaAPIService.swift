@@ -30,6 +30,25 @@ public final class LambdaAPIService {
 
     public var launchingTypeNames: Set<String> = []
     public var terminatingInstanceIds: Set<String> = []
+    public var activeLaunchProgress: LaunchOperationProgress?
+    public var activeTerminateProgress: TerminateOperationProgress?
+
+    /// Instance the launch window is configuring. Held as a snapshot so a
+    /// background refresh can't yank the subject out from under the dialog.
+    /// The launch window is "done" once both this and `activeLaunchProgress`
+    /// are nil.
+    public var pendingLaunch: OfferedInstanceType?
+
+    /// Instance the terminate window is confirming. Same snapshot rationale as
+    /// `pendingLaunch`; the terminate window is "done" once both this and
+    /// `activeTerminateProgress` are nil.
+    public var pendingTerminate: RunningInstance?
+
+    /// Minimum time the launch/terminate progress window stays on screen, so a
+    /// fast API response doesn't make the window flash open and closed before
+    /// the user can register it. Overridable for tests (set to `.zero`).
+    public var minimumSpinnerDuration: Duration = .milliseconds(800)
+
     public var pendingAlert: AlertInfo?
     public var watchedTypes: Set<String>
     public var autoLaunchTypes: Set<String>
@@ -98,6 +117,13 @@ public final class LambdaAPIService {
     }
 
     public func fetch() {
+        Task { await self.performFetch() }
+    }
+
+    /// Awaitable refresh. Used by the periodic timer and `fetch()`, and also
+    /// `await`ed by the launch/terminate flows so the progress window stays up
+    /// until the running-instance list reflects the change.
+    private func performFetch() async {
         guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else {
             error = "No API key configured"
             instances = []
@@ -108,40 +134,47 @@ public final class LambdaAPIService {
         isLoading = true
         error = nil
 
-        Task {
-            async let typesTask = client.fetchInstanceTypes(apiKey: apiKey)
-            async let runningTask = client.fetchRunningInstances(apiKey: apiKey)
+        async let typesTask = client.fetchInstanceTypes(apiKey: apiKey)
+        async let runningTask = client.fetchRunningInstances(apiKey: apiKey)
 
-            do {
-                let result = try await typesTask
-                self.instances = result.sorted { lhs, rhs in
-                    if lhs.isAvailable != rhs.isAvailable {
-                        return lhs.isAvailable
-                    }
-                    return lhs.instanceType.description.localizedStandardCompare(rhs.instanceType.description) == .orderedAscending
+        do {
+            let result = try await typesTask
+            self.instances = result.sorted { lhs, rhs in
+                if lhs.isAvailable != rhs.isAvailable {
+                    return lhs.isAvailable
                 }
-                self.lastUpdated = Date()
-                self.error = nil
-
-                let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
-                if self.hasCompletedInitialFetch && !self.selectedSSHKeyName.isEmpty {
-                    let newlyAvailable = currentlyAvailable.subtracting(self.previousAvailableTypes)
-                    let autoLaunchCandidates = newlyAvailable.intersection(self.autoLaunchTypes)
-                    if let typeName = autoLaunchCandidates.first,
-                       let instance = result.first(where: { $0.instanceType.name == typeName }),
-                       let region = instance.regionsWithCapacityAvailable.first {
-                        self.disableAutoLaunch(for: typeName)
-                        self.launchInstance(typeName: typeName, regionName: region.name, autoLaunched: true, displayName: instance.instanceType.description)
-                    }
-                }
-                self.previousAvailableTypes = currentlyAvailable
-                self.hasCompletedInitialFetch = true
-            } catch {
-                self.error = error.localizedDescription
+                return lhs.instanceType.description.localizedStandardCompare(rhs.instanceType.description) == .orderedAscending
             }
+            self.lastUpdated = Date()
+            self.error = nil
 
-            self.runningInstances = (try? await runningTask) ?? []
-            self.isLoading = false
+            let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
+            if self.hasCompletedInitialFetch && !self.selectedSSHKeyName.isEmpty {
+                let newlyAvailable = currentlyAvailable.subtracting(self.previousAvailableTypes)
+                let autoLaunchCandidates = newlyAvailable.intersection(self.autoLaunchTypes)
+                if let typeName = autoLaunchCandidates.first,
+                   let instance = result.first(where: { $0.instanceType.name == typeName }),
+                   let region = instance.regionsWithCapacityAvailable.first {
+                    self.disableAutoLaunch(for: typeName)
+                    self.launchInstance(typeName: typeName, regionName: region.name, autoLaunched: true, displayName: instance.instanceType.description)
+                }
+            }
+            self.previousAvailableTypes = currentlyAvailable
+            self.hasCompletedInitialFetch = true
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        self.runningInstances = (try? await runningTask) ?? []
+        self.isLoading = false
+    }
+
+    /// Keeps the progress window visible for at least `minimumSpinnerDuration`,
+    /// so an instant API response doesn't make it flash open and closed.
+    private func holdSpinnerVisible(since start: ContinuousClock.Instant) async {
+        let elapsed = ContinuousClock.now - start
+        if elapsed < minimumSpinnerDuration {
+            try? await Task.sleep(for: minimumSpinnerDuration - elapsed)
         }
     }
 
@@ -193,7 +226,14 @@ public final class LambdaAPIService {
 
     // MARK: - Launch Instance
 
-    public func launchInstance(typeName: String, regionName: String, autoLaunched: Bool = false, displayName: String? = nil) {
+    public func launchInstance(
+        typeName: String,
+        regionName: String,
+        instanceDescription: String? = nil,
+        regionDescription: String? = nil,
+        autoLaunched: Bool = false,
+        displayName: String? = nil
+    ) {
         guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else {
             if !autoLaunched {
                 pendingAlert = AlertInfo(title: "Launch Failed", message: "No API key configured")
@@ -210,9 +250,20 @@ public final class LambdaAPIService {
 
         launchingTypeNames.insert(typeName)
 
+        if !autoLaunched {
+            activeLaunchProgress = LaunchOperationProgress(
+                typeName: typeName,
+                instanceDescription: instanceDescription ?? typeName,
+                regionDescription: regionDescription ?? regionName,
+                sshKeyName: selectedSSHKeyName,
+                imageDescription: selectedImageDisplayName
+            )
+        }
+
         let imageFamily = selectedImageFamily.isEmpty ? nil : selectedImageFamily
 
         Task {
+            let started = ContinuousClock.now
             do {
                 let instanceIds = try await client.launchInstance(
                     apiKey: apiKey,
@@ -227,7 +278,9 @@ public final class LambdaAPIService {
                         displayName: name, regionName: regionName, instanceId: instanceIds.first
                     )
                 }
-                self.fetch()
+                // Awaited (not fire-and-forget) so the progress window stays up
+                // until the newly launched instance appears in the running list.
+                await self.performFetch()
             } catch {
                 if autoLaunched {
                     let name = displayName ?? typeName
@@ -241,29 +294,60 @@ public final class LambdaAPIService {
                     )
                 }
             }
+            // Visible progress only exists for user-initiated launches; the
+            // auto-launch path runs silently in the background.
+            if !autoLaunched {
+                await self.holdSpinnerVisible(since: started)
+            }
             self.launchingTypeNames.remove(typeName)
+            if self.activeLaunchProgress?.typeName == typeName {
+                self.activeLaunchProgress = nil
+            }
         }
     }
 
     // MARK: - Terminate Instance
 
-    public func terminateInstance(id: String, description: String) {
+    public func terminateInstance(
+        id: String,
+        description: String,
+        regionDescription: String? = nil
+    ) {
         guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else { return }
 
         terminatingInstanceIds.insert(id)
+        activeTerminateProgress = TerminateOperationProgress(
+            instanceId: id,
+            instanceDescription: description,
+            regionDescription: regionDescription ?? ""
+        )
 
         Task {
+            let started = ContinuousClock.now
             do {
                 try await client.terminateInstance(apiKey: apiKey, instanceIds: [id])
-                self.fetch()
+                // Awaited so the progress window stays up until the terminated
+                // instance has dropped out of the running list.
+                await self.performFetch()
             } catch {
                 self.pendingAlert = AlertInfo(
                     title: "Terminate Failed",
                     message: "\(description): \(error.localizedDescription)"
                 )
             }
+            await self.holdSpinnerVisible(since: started)
             self.terminatingInstanceIds.remove(id)
+            if self.activeTerminateProgress?.instanceId == id {
+                self.activeTerminateProgress = nil
+            }
         }
+    }
+
+    private var selectedImageDisplayName: String {
+        if selectedImageFamily.isEmpty {
+            return "Lambda Stack (latest)"
+        }
+        return selectedImageFamily
     }
 
     // MARK: - Watch / Auto-launch
@@ -369,6 +453,44 @@ public struct AlertInfo: Equatable, Sendable {
     public init(title: String, message: String) {
         self.title = title
         self.message = message
+    }
+}
+
+// MARK: - In-flight operations (drives progress sheets)
+
+public struct LaunchOperationProgress: Equatable, Sendable, Identifiable {
+    public var id: String { typeName }
+    public let typeName: String
+    public let instanceDescription: String
+    public let regionDescription: String
+    public let sshKeyName: String
+    public let imageDescription: String
+
+    public init(
+        typeName: String,
+        instanceDescription: String,
+        regionDescription: String,
+        sshKeyName: String,
+        imageDescription: String
+    ) {
+        self.typeName = typeName
+        self.instanceDescription = instanceDescription
+        self.regionDescription = regionDescription
+        self.sshKeyName = sshKeyName
+        self.imageDescription = imageDescription
+    }
+}
+
+public struct TerminateOperationProgress: Equatable, Sendable, Identifiable {
+    public var id: String { instanceId }
+    public let instanceId: String
+    public let instanceDescription: String
+    public let regionDescription: String
+
+    public init(instanceId: String, instanceDescription: String, regionDescription: String) {
+        self.instanceId = instanceId
+        self.instanceDescription = instanceDescription
+        self.regionDescription = regionDescription
     }
 }
 

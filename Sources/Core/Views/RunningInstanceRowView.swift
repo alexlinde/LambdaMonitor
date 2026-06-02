@@ -4,7 +4,7 @@ import AppKit
 public struct RunningInstanceRowView: View {
     public let instance: RunningInstance
     public var apiService: LambdaAPIService
-    @State private var terminateConfirmationPresented = false
+    @Environment(\.openWindow) private var openWindow
 
     public init(instance: RunningInstance, apiService: LambdaAPIService) {
         self.instance = instance
@@ -18,10 +18,6 @@ public struct RunningInstanceRowView: View {
         case "unhealthy": .red
         default: .secondary
         }
-    }
-
-    private var isTerminating: Bool {
-        apiService.terminatingInstanceIds.contains(instance.id)
     }
 
     private var canTerminate: Bool {
@@ -104,31 +100,26 @@ public struct RunningInstanceRowView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityIdentifier("running-row-\(instance.id)")
-        .sheet(isPresented: $terminateConfirmationPresented) {
-            TerminateConfirmationSheet(
-                instance: instance,
-                apiService: apiService,
-                isPresented: $terminateConfirmationPresented
-            )
-        }
+    }
+
+    private func presentTerminateWindow() {
+        apiService.pendingTerminate = instance
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "terminate")
     }
 
     @ViewBuilder
     private var stopControl: some View {
-        if isTerminating {
-            ProgressView()
-                .scaleEffect(0.5)
-                .frame(height: 16)
-                .accessibilityIdentifier("terminate-progress-\(instance.id)")
-        } else if canTerminate {
+        if canTerminate {
             Button {
-                terminateConfirmationPresented = true
+                presentTerminateWindow()
             } label: {
                 Text("Terminate")
                     .font(.caption2)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .disabled(apiService.terminatingInstanceIds.contains(instance.id))
             .help("Terminate instance")
             .accessibilityIdentifier("terminate-button-\(instance.id)")
         } else {
@@ -178,7 +169,7 @@ public struct RunningInstanceRowView: View {
         }
 
         Button(role: .destructive) {
-            terminateConfirmationPresented = true
+            presentTerminateWindow()
         } label: {
             Label("Terminate Instance…", systemImage: "stop.fill")
         }
@@ -186,19 +177,50 @@ public struct RunningInstanceRowView: View {
     }
 }
 
-// MARK: - Terminate sheet
+// MARK: - Terminate window
 //
-// `.confirmationDialog` inside a `MenuBarExtra` panel (`.menuBarExtraStyle(.window)`)
-// dismisses the popover when the destructive button is clicked, and the
-// button's action is dropped on the floor while the dialog stays stuck in
-// its presented state. Using a SwiftUI `.sheet` instead — same pattern as
-// `LaunchConfigurationSheet` — keeps the dialog tied to the popover and
-// fires the action reliably.
+// Hosted as a dedicated `Window` scene (see `LambdaMonitorApp`), NOT a
+// `.sheet`/`.confirmationDialog` inside the `MenuBarExtra` popover. A
+// confirmation presented inside the menu-bar panel is destroyed when the
+// panel resigns key on the button click, dropping the action and hiding the
+// spinner. A real window is stable. See DIALOG.md for the full rationale.
+//
+// Renders from `LambdaAPIService` state:
+//   - `activeTerminateProgress != nil` -> spinner
+//   - `pendingTerminate != nil`        -> confirmation
+//   - both nil                         -> operation finished, dismiss self
 
-private struct TerminateConfirmationSheet: View {
+public struct TerminateWindowView: View {
+    public var apiService: LambdaAPIService
+    @Environment(\.dismiss) private var dismiss
+
+    public init(apiService: LambdaAPIService) {
+        self.apiService = apiService
+    }
+
+    private var isFinished: Bool {
+        apiService.pendingTerminate == nil && apiService.activeTerminateProgress == nil
+    }
+
+    public var body: some View {
+        Group {
+            if let progress = apiService.activeTerminateProgress {
+                TerminateInProgressView(progress: progress)
+            } else if let instance = apiService.pendingTerminate {
+                TerminateConfirmationForm(instance: instance, apiService: apiService)
+            } else {
+                Color.clear.frame(width: 1, height: 1)
+            }
+        }
+        .onChange(of: isFinished) { _, finished in
+            if finished { dismiss() }
+        }
+    }
+}
+
+private struct TerminateConfirmationForm: View {
     let instance: RunningInstance
     var apiService: LambdaAPIService
-    @Binding var isPresented: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -212,24 +234,21 @@ private struct TerminateConfirmationSheet: View {
             .fixedSize(horizontal: false, vertical: true)
 
             HStack {
-                Button("Cancel") { isPresented = false }
+                Button("Cancel") { apiService.pendingTerminate = nil }
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("terminate-sheet-cancel")
                 Spacer()
-                // Intentionally NOT `role: .destructive`. Inside a SwiftUI
-                // sheet hosted by `MenuBarExtra` (`.menuBarExtraStyle(.window)`)
-                // a destructive button triggers an automatic dismissal that
-                // collapses the menu-bar panel before this action closure
-                // runs — the panel loses focus, the row view is torn down,
-                // and `terminateInstance` is never called while
-                // `isPresented` stays stuck at `true` (so the sheet appears
-                // to reappear on next open). Plain Button + tint avoids that.
                 Button("Terminate") {
+                    // Start the request first so `activeTerminateProgress` is
+                    // set before we clear `pendingTerminate` — the window swaps
+                    // to the spinner in place rather than briefly looking
+                    // finished.
                     apiService.terminateInstance(
                         id: instance.id,
-                        description: instance.instanceType.description
+                        description: instance.instanceType.description,
+                        regionDescription: instance.region.description
                     )
-                    isPresented = false
+                    apiService.pendingTerminate = nil
                 }
                 .tint(.red)
                 .keyboardShortcut(.defaultAction)
@@ -255,7 +274,11 @@ private struct TerminateConfirmationSheet: View {
 
 #Preview("Terminating") {
     let service = PreviewService.populated()
-    service.terminatingInstanceIds.insert(MockData.runningH100.id)
+    service.activeTerminateProgress = TerminateOperationProgress(
+        instanceId: MockData.runningH100.id,
+        instanceDescription: MockData.runningH100.instanceType.description,
+        regionDescription: MockData.runningH100.region.description
+    )
     return RunningInstanceRowView(instance: MockData.runningH100, apiService: service)
         .padding()
 }

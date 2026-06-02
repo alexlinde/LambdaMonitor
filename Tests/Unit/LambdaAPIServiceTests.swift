@@ -9,6 +9,9 @@ private func setUpTestService() -> (LambdaAPIService, MockAPIClient) {
     _ = KeychainService.save(apiKey: "test-key-12345")
     let mock = MockAPIClient()
     let service = LambdaAPIService(client: mock)
+    // Tests assert progress clears within ~200ms, so disable the production
+    // minimum spinner-visibility hold.
+    service.minimumSpinnerDuration = .zero
     return (service, mock)
 }
 
@@ -291,12 +294,23 @@ struct LambdaAPIServiceTests {
         mock.runningInstancesResult = .success([])
         service.selectedSSHKeyName = "my-laptop"
 
-        service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
+        service.launchInstance(
+            typeName: "gpu_1x_h100_sxm5",
+            regionName: "us-west-1",
+            instanceDescription: "1x H100",
+            regionDescription: "US West"
+        )
         #expect(service.launchingTypeNames.contains("gpu_1x_h100_sxm5"))
+        #expect(service.activeLaunchProgress?.typeName == "gpu_1x_h100_sxm5")
+        #expect(service.activeLaunchProgress?.instanceDescription == "1x H100")
+        #expect(service.activeLaunchProgress?.regionDescription == "US West")
+        #expect(service.activeLaunchProgress?.sshKeyName == "my-laptop")
+        #expect(service.activeLaunchProgress?.imageDescription == "Lambda Stack (latest)")
 
         try await Task.sleep(for: .milliseconds(200))
 
         #expect(!service.launchingTypeNames.contains("gpu_1x_h100_sxm5"))
+        #expect(service.activeLaunchProgress == nil)
         #expect(service.pendingAlert == nil)
         #expect(mock.launchCallCount == 1)
         #expect(mock.lastLaunchedTypeName == "gpu_1x_h100_sxm5")
@@ -403,14 +417,17 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success([])
         mock.runningInstancesResult = .success([])
 
-        service.terminateInstance(id: "i-abc123", description: "1x H100")
+        service.terminateInstance(id: "i-abc123", description: "1x H100", regionDescription: "US West")
         #expect(service.terminatingInstanceIds.contains("i-abc123"))
+        #expect(service.activeTerminateProgress?.instanceId == "i-abc123")
+        #expect(service.activeTerminateProgress?.regionDescription == "US West")
 
         try await Task.sleep(for: .milliseconds(200))
 
         #expect(mock.terminateCallCount == 1)
         #expect(mock.lastTerminatedIds == ["i-abc123"])
         #expect(!service.terminatingInstanceIds.contains("i-abc123"))
+        #expect(service.activeTerminateProgress == nil)
     }
 
     @Test("terminateInstance() shows alert on failure")

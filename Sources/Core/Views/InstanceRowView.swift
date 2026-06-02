@@ -6,7 +6,6 @@ public struct InstanceRowView: View {
     public var apiService: LambdaAPIService
     public var compact: Bool = false
     @Environment(\.openWindow) private var openWindow
-    @State private var launchConfigurationPresented = false
 
     public init(instance: OfferedInstanceType, apiService: LambdaAPIService, compact: Bool = false) {
         self.instance = instance
@@ -25,10 +24,6 @@ public struct InstanceRowView: View {
 
     private var regionsText: String {
         instance.regionsWithCapacityAvailable.map(\.description).joined(separator: " · ")
-    }
-
-    private var isThisLaunching: Bool {
-        apiService.launchingTypeNames.contains(instance.instanceType.name)
     }
 
     private var isAutoLaunch: Bool {
@@ -68,13 +63,6 @@ public struct InstanceRowView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityDescription)
         .accessibilityIdentifier("instance-row-\(instance.instanceType.name)")
-        .sheet(isPresented: $launchConfigurationPresented) {
-            LaunchConfigurationSheet(
-                instance: instance,
-                apiService: apiService,
-                isPresented: $launchConfigurationPresented
-            )
-        }
     }
 
     private var watchedContent: some View {
@@ -177,23 +165,16 @@ public struct InstanceRowView: View {
 
     @ViewBuilder
     private var launchControl: some View {
-        if isThisLaunching {
-            ProgressView()
-                .scaleEffect(0.5)
-                .frame(height: 16)
-                .accessibilityIdentifier("launch-progress-\(instance.instanceType.name)")
-        } else {
-            Button("Launch") {
-                launchOrShowDialog()
-            }
-            .font(.caption2)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .fixedSize()
-            .disabled(!instance.isAvailable || !apiService.launchingTypeNames.isEmpty)
-            .help(instance.isAvailable ? "Launch instance" : "Unavailable")
-            .accessibilityIdentifier("launch-button-\(instance.instanceType.name)")
+        Button("Launch") {
+            launchOrShowDialog()
         }
+        .font(.caption2)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .fixedSize()
+        .disabled(!instance.isAvailable || !apiService.launchingTypeNames.isEmpty)
+        .help(instance.isAvailable ? "Launch instance" : "Unavailable")
+        .accessibilityIdentifier("launch-button-\(instance.instanceType.name)")
     }
 
     private func launchOrShowDialog() {
@@ -208,17 +189,29 @@ public struct InstanceRowView: View {
             }
         }
 
+        // Fast path: a single region + a chosen SSH key means there's nothing
+        // to configure, so launch immediately. We still open the launch window
+        // first so its spinner is visible while the request runs — otherwise
+        // the launch would be invisible. The window dismisses itself when the
+        // operation completes. (See DIALOG.md for why this is a Window and not
+        // an in-popover sheet.)
         if !needsLaunchDialog,
            let region = instance.regionsWithCapacityAvailable.first,
            !apiService.selectedSSHKeyName.isEmpty {
+            NSApp.activate(ignoringOtherApps: true)
             apiService.launchInstance(
                 typeName: instance.instanceType.name,
-                regionName: region.name
+                regionName: region.name,
+                instanceDescription: instance.instanceType.description,
+                regionDescription: region.description
             )
+            openWindow(id: "launch")
             return
         }
 
-        launchConfigurationPresented = true
+        apiService.pendingLaunch = instance
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "launch")
     }
 
     private var autoLaunchToggle: some View {
@@ -284,20 +277,57 @@ public struct InstanceRowView: View {
     }
 }
 
-// MARK: - Launch sheet (SwiftUI avoids NSAlert.runModal issues in MenuBarExtra panels)
+// MARK: - Launch window
+//
+// Hosted as a dedicated `Window` scene (see `LambdaMonitorApp`), NOT a
+// `.sheet` inside the `MenuBarExtra` popover. A sheet presented inside the
+// menu-bar panel is torn down when the panel resigns key (which a button
+// click triggers), dropping the action and hiding the spinner. A real window
+// is stable. See DIALOG.md for the full rationale.
+//
+// The window renders from `LambdaAPIService` state:
+//   - `activeLaunchProgress != nil` -> spinner
+//   - `pendingLaunch != nil`        -> region/SSH configuration form
+//   - both nil                      -> operation finished, dismiss self
 
-private struct LaunchConfigurationSheet: View {
+public struct LaunchWindowView: View {
+    public var apiService: LambdaAPIService
+    @Environment(\.dismiss) private var dismiss
+
+    public init(apiService: LambdaAPIService) {
+        self.apiService = apiService
+    }
+
+    private var isFinished: Bool {
+        apiService.pendingLaunch == nil && apiService.activeLaunchProgress == nil
+    }
+
+    public var body: some View {
+        Group {
+            if let progress = apiService.activeLaunchProgress {
+                LaunchInProgressView(progress: progress)
+            } else if let instance = apiService.pendingLaunch {
+                LaunchConfigurationForm(instance: instance, apiService: apiService)
+            } else {
+                Color.clear.frame(width: 1, height: 1)
+            }
+        }
+        .onChange(of: isFinished) { _, finished in
+            if finished { dismiss() }
+        }
+    }
+}
+
+private struct LaunchConfigurationForm: View {
     let instance: OfferedInstanceType
     var apiService: LambdaAPIService
-    @Binding var isPresented: Bool
 
     @State private var selectedRegionName: String
     @State private var selectedKeyName: String
 
-    init(instance: OfferedInstanceType, apiService: LambdaAPIService, isPresented: Binding<Bool>) {
+    init(instance: OfferedInstanceType, apiService: LambdaAPIService) {
         self.instance = instance
         self.apiService = apiService
-        self._isPresented = isPresented
         let regions = instance.regionsWithCapacityAvailable
         _selectedRegionName = State(initialValue: regions.first?.name ?? "")
         let keys = apiService.sshKeys
@@ -309,6 +339,12 @@ private struct LaunchConfigurationSheet: View {
             initialKey = keys.first?.name ?? ""
         }
         _selectedKeyName = State(initialValue: initialKey)
+    }
+
+    private var selectedRegionDescription: String {
+        instance.regionsWithCapacityAvailable
+            .first { $0.name == selectedRegionName }?
+            .description ?? selectedRegionName
     }
 
     var body: some View {
@@ -341,7 +377,7 @@ private struct LaunchConfigurationSheet: View {
             .frame(maxWidth: .infinity)
 
             HStack {
-                Button("Cancel") { isPresented = false }
+                Button("Cancel") { apiService.pendingLaunch = nil }
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("launch-sheet-cancel")
                 Spacer()
@@ -349,11 +385,16 @@ private struct LaunchConfigurationSheet: View {
                     if !selectedKeyName.isEmpty {
                         apiService.selectedSSHKeyName = selectedKeyName
                     }
+                    // Start the request first so `activeLaunchProgress` is set
+                    // before we clear `pendingLaunch` — the window swaps to the
+                    // spinner in place rather than briefly looking finished.
                     apiService.launchInstance(
                         typeName: instance.instanceType.name,
-                        regionName: selectedRegionName
+                        regionName: selectedRegionName,
+                        instanceDescription: instance.instanceType.description,
+                        regionDescription: selectedRegionDescription
                     )
-                    isPresented = false
+                    apiService.pendingLaunch = nil
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(selectedRegionName.isEmpty || selectedKeyName.isEmpty)
@@ -362,8 +403,8 @@ private struct LaunchConfigurationSheet: View {
         }
         .padding(20)
         .frame(minWidth: 300)
-        // No `.accessibilityIdentifier` at the sheet root: SwiftUI propagates
-        // a root identifier down to descendants and overrides the per-control
+        // No `.accessibilityIdentifier` at the root: SwiftUI propagates a root
+        // identifier down to descendants and overrides the per-control
         // identifiers (`launch-sheet-confirm`, etc.) tests need to query.
     }
 }

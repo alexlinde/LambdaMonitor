@@ -135,18 +135,35 @@ final class LambdaMonitorLaunchTests: LambdaMonitorUITestCase {
         XCTAssertTrue(launch.waitForExistence(timeout: 5))
         launch.click()
 
-        let confirm = app.buttons["launch-sheet-confirm"]
+        // The launch dialog is a dedicated Window (see DIALOG.md), not an
+        // in-popover sheet. The H100 fixture has two regions and two SSH keys,
+        // so the configuration form is shown.
+        let launchWindow = app.windows["Launch Instance"]
+        XCTAssertTrue(
+            launchWindow.waitForExistence(timeout: 5),
+            "Launch window should open from the row's Launch button"
+        )
+
+        let confirm = launchWindow.buttons["launch-sheet-confirm"]
         XCTAssertTrue(
             confirm.waitForExistence(timeout: 5),
-            "Launch sheet should present with a confirm button"
+            "Launch window should present a confirm button"
         )
-        XCTAssertTrue(app.buttons["launch-sheet-cancel"].exists)
+        XCTAssertTrue(launchWindow.buttons["launch-sheet-cancel"].exists)
         confirm.click()
 
-        let confirmButton = app.buttons["launch-sheet-confirm"]
+        // The window swaps the form for the progress spinner in place while
+        // the request runs (mock returns in ~800ms).
+        let progressTitle = launchWindow.staticTexts["launch-progress-title"]
         XCTAssertTrue(
-            waitFor({ !confirmButton.exists }, timeout: 3),
-            "Launch sheet should dismiss after confirming"
+            progressTitle.waitForExistence(timeout: 3),
+            "Launch progress should show in the launch window while the API request runs"
+        )
+
+        // The window dismisses itself once the launch completes.
+        XCTAssertTrue(
+            self.waitFor({ !launchWindow.exists }, timeout: 8),
+            "Launch window should close after the launch completes"
         )
         window.buttons["refresh-button"].click()
 
@@ -166,21 +183,21 @@ final class LambdaMonitorLaunchTests: LambdaMonitorUITestCase {
         XCTAssertTrue(launch.waitForExistence(timeout: 5))
         launch.click()
 
-        let cancel = app.buttons["launch-sheet-cancel"]
+        let launchWindow = app.windows["Launch Instance"]
+        let cancel = launchWindow.buttons["launch-sheet-cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 5))
         cancel.click()
 
-        let confirmButton = app.buttons["launch-sheet-confirm"]
         XCTAssertTrue(
-            waitFor({ !confirmButton.exists }, timeout: 3),
-            "Launch sheet should dismiss on Cancel"
+            waitFor({ !launchWindow.exists }, timeout: 3),
+            "Launch window should close on Cancel"
         )
 
         let synthetic = window.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'running-row-i-uitest'"))
         XCTAssertEqual(
             synthetic.count, 0,
-            "Cancelling the sheet should not produce a launched instance"
+            "Cancelling the launch window should not produce a launched instance"
         )
     }
 
@@ -205,21 +222,28 @@ final class LambdaMonitorTerminateTests: LambdaMonitorUITestCase {
         XCTAssertTrue(terminate.exists)
         terminate.click()
 
-        // SwiftUI `.confirmationDialog` presents as a sheet with a destructive
-        // `Terminate` button. Scope to the sheet so we don't match the row's
-        // own Terminate button as well.
-        let dialog = app.sheets.firstMatch
+        // The terminate confirmation is a dedicated Window (see DIALOG.md),
+        // not an in-popover sheet/confirmationDialog. Scope to the window so we
+        // don't match the row's own Terminate button.
+        let terminateWindow = app.windows["Terminate Instance"]
         XCTAssertTrue(
-            dialog.waitForExistence(timeout: 5),
-            "Terminate confirmation dialog should present as a sheet"
+            terminateWindow.waitForExistence(timeout: 5),
+            "Terminate confirmation should present as a dedicated window"
         )
-        dialog.buttons["Terminate"].click()
+        terminateWindow.buttons["terminate-sheet-confirm"].click()
+
+        let progressTitle = terminateWindow.staticTexts["terminate-progress-title"]
+        XCTAssertTrue(
+            progressTitle.waitForExistence(timeout: 3),
+            "Terminate progress should show in the terminate window while the API request runs"
+        )
 
         // Mock client removes the instance from its running list on terminate.
-        // The next fetch (auto-refresh triggered by the service) drops the row.
+        // The fetch triggered by the service drops the row, and the window
+        // dismisses itself when the operation completes.
         XCTAssertTrue(
-            waitFor({ !row.exists }, timeout: 5),
-            "Running row should disappear after terminate is confirmed"
+            waitFor({ !row.exists && !terminateWindow.exists }, timeout: 8),
+            "Running row should disappear and the terminate window should close after terminate completes"
         )
     }
 
@@ -229,12 +253,17 @@ final class LambdaMonitorTerminateTests: LambdaMonitorUITestCase {
 
         window.buttons["terminate-button-i-abc123def456"].click()
 
-        let dialog = app.sheets.firstMatch
+        let terminateWindow = app.windows["Terminate Instance"]
         XCTAssertTrue(
-            dialog.waitForExistence(timeout: 5),
-            "Terminate confirmation dialog should present as a sheet"
+            terminateWindow.waitForExistence(timeout: 5),
+            "Terminate confirmation should present as a dedicated window"
         )
-        dialog.buttons["Cancel"].click()
+        terminateWindow.buttons["terminate-sheet-cancel"].click()
+
+        XCTAssertTrue(
+            waitFor({ !terminateWindow.exists }, timeout: 3),
+            "Terminate window should close on Cancel"
+        )
 
         // Row should still exist; the row identifier doesn't change.
         XCTAssertTrue(

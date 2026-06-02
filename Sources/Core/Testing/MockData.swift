@@ -316,6 +316,12 @@ extension MockAPIClient {
     /// running instances so end-to-end launch can be observed in the UI.
     public static func uiTest() -> MockAPIClient {
         let mock = MockAPIClient()
+        mock.delay = .milliseconds(800)
+        // Launch/terminate run longer than a plain fetch so the progress
+        // spinner in the launch/terminate Window stays on screen long enough
+        // for XCUITest to reliably observe it (its first snapshot lands ~1.5s
+        // after the confirming click).
+        mock.operationDelay = .milliseconds(2500)
         mock.instanceTypesResult = .success([
             MockData.h100x1Available,
             MockData.a6000Available,
@@ -484,6 +490,13 @@ public enum PreviewService {
     public static func launching() -> LambdaAPIService {
         let service = populated()
         service.launchingTypeNames = ["gpu_1x_h100_sxm5"]
+        service.activeLaunchProgress = LaunchOperationProgress(
+            typeName: "gpu_1x_h100_sxm5",
+            instanceDescription: "1x H100 (80 GB SXM5)",
+            regionDescription: "US West",
+            sshKeyName: "my-laptop",
+            imageDescription: "Lambda Stack (latest)"
+        )
         return service
     }
 }

@@ -18,6 +18,11 @@ public struct InstanceListView: View {
             footer
         }
         .frame(width: 320)
+        // Launch/terminate progress spinners are shown by the dedicated
+        // `launch`/`terminate` Window scenes, not as sheets here — a sheet
+        // presented inside the MenuBarExtra popover never becomes visible
+        // because the click that starts the operation collapses the popover.
+        // See DIALOG.md.
         .onChange(of: apiService.pendingAlert) { _, alert in
             guard let alert else { return }
             apiService.pendingAlert = nil

@@ -94,15 +94,27 @@ rm -f "$DMG_TEMP" "$DMG_FINAL"
 DMG_VOLUME="$APP_NAME"
 DMG_SIZE=32  # MB, generous for a small app
 
+# If a previous run left a stale mount around, clear it first.
+if [[ -d "/Volumes/$DMG_VOLUME" ]]; then
+    hdiutil detach "/Volumes/$DMG_VOLUME" -quiet || true
+fi
+
 hdiutil create \
     -size "${DMG_SIZE}m" \
     -fs HFS+ \
     -volname "$DMG_VOLUME" \
     "$DMG_TEMP"
 
-MOUNT_DIR=$(hdiutil attach "$DMG_TEMP" -readwrite -noverify | grep "/Volumes/" | tail -1 | awk '{print $NF}')
+ATTACH_OUTPUT=$(hdiutil attach "$DMG_TEMP" -readwrite -noverify)
+MOUNT_DIR=$(printf "%s\n" "$ATTACH_OUTPUT" | awk '/\/Volumes\// {print $NF}' | tail -1)
+if [[ -z "$MOUNT_DIR" || ! -d "$MOUNT_DIR" ]]; then
+    echo "Failed to find DMG mount point from hdiutil output:"
+    echo "$ATTACH_OUTPUT"
+    exit 1
+fi
 
-cp -R "$APP_BUNDLE" "$MOUNT_DIR/"
+ditto "$APP_BUNDLE" "$MOUNT_DIR/$APP_NAME.app"
+rm -f "$MOUNT_DIR/Applications"
 ln -s /Applications "$MOUNT_DIR/Applications"
 
 # Style the DMG window
