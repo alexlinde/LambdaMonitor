@@ -20,6 +20,7 @@ private func cleanupTestState() {
     KeychainService.delete()
     UserDefaults.standard.removeObject(forKey: "watchedInstanceTypes")
     UserDefaults.standard.removeObject(forKey: "autoLaunchInstanceTypes")
+    UserDefaults.standard.removeObject(forKey: "autoLaunchConfigs")
     UserDefaults.standard.removeObject(forKey: "sshKeyName")
     UserDefaults.standard.removeObject(forKey: "imageFamily")
 }
@@ -281,6 +282,104 @@ struct LambdaAPIServiceTests {
         #expect(!service.isAutoLaunch("gpu_1x_h100_sxm5"))
     }
 
+    @Test("configureAutoLaunch enables, stores per-type config, and updates last-used")
+    @MainActor
+    func configureAutoLaunchStoresConfig() async throws {
+        let (service, _) = setUpTestService()
+        defer { cleanupTestState() }
+
+        service.configureAutoLaunch(
+            typeName: "gpu_1x_h100_sxm5",
+            sshKeyName: "work-desktop",
+            imageFamily: "ubuntu-lts"
+        )
+
+        #expect(service.isAutoLaunch("gpu_1x_h100_sxm5"))
+        #expect(service.autoLaunchConfigs["gpu_1x_h100_sxm5"]
+            == AutoLaunchConfig(sshKeyName: "work-desktop", imageFamily: "ubuntu-lts"))
+        // Remembered as the new last-used selection.
+        #expect(service.selectedSSHKeyName == "work-desktop")
+        #expect(service.selectedImageFamily == "ubuntu-lts")
+    }
+
+    @Test("Disabling auto-launch clears its stored config")
+    @MainActor
+    func disableAutoLaunchClearsConfig() async throws {
+        let (service, _) = setUpTestService()
+        defer { cleanupTestState() }
+
+        service.configureAutoLaunch(
+            typeName: "gpu_1x_h100_sxm5", sshKeyName: "my-laptop", imageFamily: ""
+        )
+        #expect(service.autoLaunchConfigs["gpu_1x_h100_sxm5"] != nil)
+
+        service.toggleAutoLaunch(for: "gpu_1x_h100_sxm5")
+        #expect(!service.isAutoLaunch("gpu_1x_h100_sxm5"))
+        #expect(service.autoLaunchConfigs["gpu_1x_h100_sxm5"] == nil)
+    }
+
+    @Test("Auto-launch uses the per-type config's SSH key and image")
+    @MainActor
+    func autoLaunchUsesPerTypeConfig() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        // A different global selection should be ignored in favor of the
+        // per-type config captured when auto-launch was enabled.
+        service.selectedSSHKeyName = "my-laptop"
+        service.selectedImageFamily = ""
+
+        let h100Unavailable = OfferedInstanceType(
+            instanceType: MockData.h100x1Info,
+            regionsWithCapacityAvailable: []
+        )
+        mock.instanceTypesResult = .success([h100Unavailable])
+        mock.runningInstancesResult = .success([])
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(100))
+
+        service.toggleWatch(for: "gpu_1x_h100_sxm5")
+        service.configureAutoLaunch(
+            typeName: "gpu_1x_h100_sxm5", sshKeyName: "work-desktop", imageFamily: "ubuntu-lts"
+        )
+
+        mock.instanceTypesResult = .success([MockData.h100x1Available])
+        mock.launchResult = .success(["i-auto-config"])
+
+        service.fetch()
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(mock.launchCallCount == 1)
+        #expect(mock.lastLaunchedSSHKeyNames == ["work-desktop"])
+        #expect(mock.lastLaunchedImageFamily == "ubuntu-lts")
+        #expect(!service.isAutoLaunch("gpu_1x_h100_sxm5"))
+    }
+
+    @Test("launchInstance() honors explicit SSH key and image overrides")
+    @MainActor
+    func launchHonorsOverrides() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.launchResult = .success(["i-override"])
+        mock.instanceTypesResult = .success([])
+        mock.runningInstancesResult = .success([])
+        service.selectedSSHKeyName = "my-laptop"
+        service.selectedImageFamily = ""
+
+        service.launchInstance(
+            typeName: "gpu_1x_h100_sxm5",
+            regionName: "us-west-1",
+            sshKeyName: "work-desktop",
+            imageFamily: "ubuntu-lts"
+        )
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(mock.lastLaunchedSSHKeyNames == ["work-desktop"])
+        #expect(mock.lastLaunchedImageFamily == "ubuntu-lts")
+    }
+
     // MARK: - Launch
 
     @Test("launchInstance() tracks launching type and calls API")
@@ -371,6 +470,43 @@ struct LambdaAPIServiceTests {
         try await Task.sleep(for: .milliseconds(200))
 
         #expect(mock.lastLaunchedImageFamily == nil)
+    }
+
+    @Test("Launch dialog selecting a different SSH key and image forwards and remembers them")
+    @MainActor
+    func dialogSelectionForwardsAndRemembers() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.launchResult = .success(["i-dialog-pick"])
+        mock.instanceTypesResult = .success([])
+        mock.runningInstancesResult = .success([])
+
+        // Preselected defaults the dialog opens with.
+        service.selectedSSHKeyName = "my-laptop"
+        service.selectedImageFamily = ""
+
+        // Emulate the dialog's confirm() after the user picks different values:
+        // it remembers the choice as last-used and launches with explicit
+        // overrides.
+        let chosenKey = "work-desktop"
+        let chosenImage = "ubuntu-lts"
+        service.selectedSSHKeyName = chosenKey
+        service.selectedImageFamily = chosenImage
+        service.launchInstance(
+            typeName: "gpu_1x_h100_sxm5",
+            regionName: "us-west-1",
+            sshKeyName: chosenKey,
+            imageFamily: chosenImage
+        )
+        try await Task.sleep(for: .milliseconds(200))
+
+        // Forwarded to the API…
+        #expect(mock.lastLaunchedSSHKeyNames == [chosenKey])
+        #expect(mock.lastLaunchedImageFamily == chosenImage)
+        // …and remembered for next time.
+        #expect(service.selectedSSHKeyName == chosenKey)
+        #expect(service.selectedImageFamily == chosenImage)
     }
 
     @Test("launchInstance() shows alert on error")

@@ -7,6 +7,7 @@ public final class LambdaAPIService {
     private enum DefaultsKey {
         static let watchedTypes = "watchedInstanceTypes"
         static let autoLaunchTypes = "autoLaunchInstanceTypes"
+        static let autoLaunchConfigs = "autoLaunchConfigs"
         static let sshKeyName = "sshKeyName"
         static let imageFamily = "imageFamily"
     }
@@ -39,6 +40,12 @@ public final class LambdaAPIService {
     /// are nil.
     public var pendingLaunch: OfferedInstanceType?
 
+    /// Instance whose *auto-launch* settings the launch window is configuring.
+    /// Set when the user toggles auto-launch on: the same dialog collects the
+    /// SSH key + image to use when the instance later becomes available, but
+    /// confirming stores the choice rather than launching immediately.
+    public var pendingAutoLaunchConfig: OfferedInstanceType?
+
     /// Instance the terminate window is confirming. Same snapshot rationale as
     /// `pendingLaunch`; the terminate window is "done" once both this and
     /// `activeTerminateProgress` are nil.
@@ -52,6 +59,17 @@ public final class LambdaAPIService {
     public var pendingAlert: AlertInfo?
     public var watchedTypes: Set<String>
     public var autoLaunchTypes: Set<String>
+
+    /// Per-type SSH key + image to use when a watched type is auto-launched.
+    /// Captured when the user enables auto-launch so each type keeps its own
+    /// choice; falls back to the global last-used selection when absent.
+    public var autoLaunchConfigs: [String: AutoLaunchConfig] {
+        didSet {
+            if let data = try? JSONEncoder().encode(autoLaunchConfigs) {
+                UserDefaults.standard.set(data, forKey: DefaultsKey.autoLaunchConfigs)
+            }
+        }
+    }
 
     public var selectedSSHKeyName: String {
         didSet {
@@ -78,6 +96,12 @@ public final class LambdaAPIService {
         self.apiKeyOverride = apiKeyOverride
         watchedTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.watchedTypes) ?? [])
         autoLaunchTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.autoLaunchTypes) ?? [])
+        if let data = UserDefaults.standard.data(forKey: DefaultsKey.autoLaunchConfigs),
+           let decoded = try? JSONDecoder().decode([String: AutoLaunchConfig].self, from: data) {
+            autoLaunchConfigs = decoded
+        } else {
+            autoLaunchConfigs = [:]
+        }
         selectedSSHKeyName = UserDefaults.standard.string(forKey: DefaultsKey.sshKeyName) ?? ""
         selectedImageFamily = UserDefaults.standard.string(forKey: DefaultsKey.imageFamily) ?? ""
     }
@@ -149,14 +173,28 @@ public final class LambdaAPIService {
             self.error = nil
 
             let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
-            if self.hasCompletedInitialFetch && !self.selectedSSHKeyName.isEmpty {
+            if self.hasCompletedInitialFetch {
                 let newlyAvailable = currentlyAvailable.subtracting(self.previousAvailableTypes)
                 let autoLaunchCandidates = newlyAvailable.intersection(self.autoLaunchTypes)
                 if let typeName = autoLaunchCandidates.first,
                    let instance = result.first(where: { $0.instanceType.name == typeName }),
                    let region = instance.regionsWithCapacityAvailable.first {
-                    self.disableAutoLaunch(for: typeName)
-                    self.launchInstance(typeName: typeName, regionName: region.name, autoLaunched: true, displayName: instance.instanceType.description)
+                    // Prefer the per-type choice captured when auto-launch was
+                    // enabled; fall back to the global last-used selection.
+                    let config = self.autoLaunchConfigs[typeName]
+                    let sshKey = config?.sshKeyName ?? self.selectedSSHKeyName
+                    let imageFamily = config?.imageFamily ?? self.selectedImageFamily
+                    if !sshKey.isEmpty {
+                        self.disableAutoLaunch(for: typeName)
+                        self.launchInstance(
+                            typeName: typeName,
+                            regionName: region.name,
+                            autoLaunched: true,
+                            displayName: instance.instanceType.description,
+                            sshKeyName: sshKey,
+                            imageFamily: imageFamily
+                        )
+                    }
                 }
             }
             self.previousAvailableTypes = currentlyAvailable
@@ -232,7 +270,9 @@ public final class LambdaAPIService {
         instanceDescription: String? = nil,
         regionDescription: String? = nil,
         autoLaunched: Bool = false,
-        displayName: String? = nil
+        displayName: String? = nil,
+        sshKeyName: String? = nil,
+        imageFamily: String? = nil
     ) {
         guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else {
             if !autoLaunched {
@@ -241,9 +281,14 @@ public final class LambdaAPIService {
             return
         }
 
-        guard !selectedSSHKeyName.isEmpty else {
+        // Resolve the SSH key + image, defaulting to the global last-used
+        // selection when no explicit override is provided.
+        let keyName = sshKeyName ?? selectedSSHKeyName
+        let resolvedImageFamily = imageFamily ?? selectedImageFamily
+
+        guard !keyName.isEmpty else {
             if !autoLaunched {
-                pendingAlert = AlertInfo(title: "Launch Failed", message: "No SSH key selected — choose one in Settings")
+                pendingAlert = AlertInfo(title: "Launch Failed", message: "No SSH key selected — choose one in the launch dialog")
             }
             return
         }
@@ -255,12 +300,12 @@ public final class LambdaAPIService {
                 typeName: typeName,
                 instanceDescription: instanceDescription ?? typeName,
                 regionDescription: regionDescription ?? regionName,
-                sshKeyName: selectedSSHKeyName,
-                imageDescription: selectedImageDisplayName
+                sshKeyName: keyName,
+                imageDescription: imageDisplayName(for: resolvedImageFamily)
             )
         }
 
-        let imageFamily = selectedImageFamily.isEmpty ? nil : selectedImageFamily
+        let imageFamilyParam = resolvedImageFamily.isEmpty ? nil : resolvedImageFamily
 
         Task {
             let started = ContinuousClock.now
@@ -269,8 +314,8 @@ public final class LambdaAPIService {
                     apiKey: apiKey,
                     typeName: typeName,
                     regionName: regionName,
-                    sshKeyNames: [selectedSSHKeyName],
-                    imageFamily: imageFamily
+                    sshKeyNames: [keyName],
+                    imageFamily: imageFamilyParam
                 )
                 if autoLaunched {
                     let name = displayName ?? typeName
@@ -302,6 +347,13 @@ public final class LambdaAPIService {
             self.launchingTypeNames.remove(typeName)
             if self.activeLaunchProgress?.typeName == typeName {
                 self.activeLaunchProgress = nil
+            }
+            // Clear the launch-window subject only once the operation finishes,
+            // so the single launch dialog shows its in-progress spinner inline
+            // (rather than swapping to a separate progress window) and then
+            // dismisses itself.
+            if !autoLaunched, self.pendingLaunch?.instanceType.name == typeName {
+                self.pendingLaunch = nil
             }
         }
     }
@@ -343,11 +395,8 @@ public final class LambdaAPIService {
         }
     }
 
-    private var selectedImageDisplayName: String {
-        if selectedImageFamily.isEmpty {
-            return "Lambda Stack (latest)"
-        }
-        return selectedImageFamily
+    private func imageDisplayName(for family: String) -> String {
+        family.isEmpty ? "Lambda Stack (latest)" : family
     }
 
     // MARK: - Watch / Auto-launch
@@ -372,11 +421,27 @@ public final class LambdaAPIService {
         var types = autoLaunchTypes
         if types.contains(typeName) {
             types.remove(typeName)
+            autoLaunchConfigs[typeName] = nil
         } else {
             types.insert(typeName)
         }
         autoLaunchTypes = types
         UserDefaults.standard.set(Array(autoLaunchTypes), forKey: DefaultsKey.autoLaunchTypes)
+    }
+
+    /// Enables auto-launch for `typeName`, capturing the SSH key + image to use
+    /// when the type later becomes available. Also updates the global last-used
+    /// selection so the next dialog preselects the same values.
+    public func configureAutoLaunch(typeName: String, sshKeyName: String, imageFamily: String) {
+        autoLaunchConfigs[typeName] = AutoLaunchConfig(sshKeyName: sshKeyName, imageFamily: imageFamily)
+        var types = autoLaunchTypes
+        types.insert(typeName)
+        autoLaunchTypes = types
+        UserDefaults.standard.set(Array(autoLaunchTypes), forKey: DefaultsKey.autoLaunchTypes)
+        if !sshKeyName.isEmpty {
+            selectedSSHKeyName = sshKeyName
+        }
+        selectedImageFamily = imageFamily
     }
 
     public func isAutoLaunch(_ typeName: String) -> Bool {
@@ -388,6 +453,7 @@ public final class LambdaAPIService {
         types.remove(typeName)
         autoLaunchTypes = types
         UserDefaults.standard.set(Array(autoLaunchTypes), forKey: DefaultsKey.autoLaunchTypes)
+        autoLaunchConfigs[typeName] = nil
     }
 
     // MARK: - Notifications
@@ -441,6 +507,21 @@ public final class LambdaAPIService {
         } catch {
             return .failure(error)
         }
+    }
+}
+
+// MARK: - Auto-launch config
+
+/// SSH key + image family captured when a watched type's auto-launch is
+/// enabled, used when the type later becomes available. An empty `imageFamily`
+/// means "Lambda Stack (latest)".
+public struct AutoLaunchConfig: Codable, Equatable, Sendable {
+    public var sshKeyName: String
+    public var imageFamily: String
+
+    public init(sshKeyName: String, imageFamily: String) {
+        self.sshKeyName = sshKeyName
+        self.imageFamily = imageFamily
     }
 }
 

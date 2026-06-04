@@ -28,6 +28,7 @@ struct LambdaMonitorApp: App {
             for key in [
                 "watchedInstanceTypes",
                 "autoLaunchInstanceTypes",
+                "autoLaunchConfigs",
                 "selectedSSHKeyName",
                 "selectedImageFamily",
             ] {

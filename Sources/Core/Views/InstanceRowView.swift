@@ -159,10 +159,6 @@ public struct InstanceRowView: View {
         .accessibilityIdentifier("watch-toggle-\(instance.instanceType.name)")
     }
 
-    private var needsLaunchDialog: Bool {
-        instance.regionsWithCapacityAvailable.count > 1 || apiService.sshKeys.count > 1
-    }
-
     @ViewBuilder
     private var launchControl: some View {
         Button("Launch") {
@@ -177,39 +173,27 @@ public struct InstanceRowView: View {
         .accessibilityIdentifier("launch-button-\(instance.instanceType.name)")
     }
 
+    /// Always present the launch dialog so the user can pick the SSH key and
+    /// image (the dialog preselects the last-used values). The dialog lives in
+    /// a dedicated Window, not an in-popover sheet — see DIALOG.md.
     private func launchOrShowDialog() {
         guard !apiService.sshKeys.isEmpty else {
             openSettingsWindow()
             return
         }
+        apiService.pendingLaunch = instance
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: "launch")
+    }
 
-        if apiService.selectedSSHKeyName.isEmpty {
-            if apiService.sshKeys.count == 1 {
-                apiService.selectedSSHKeyName = apiService.sshKeys[0].name
-            }
-        }
-
-        // Fast path: a single region + a chosen SSH key means there's nothing
-        // to configure, so launch immediately. We still open the launch window
-        // first so its spinner is visible while the request runs — otherwise
-        // the launch would be invisible. The window dismisses itself when the
-        // operation completes. (See DIALOG.md for why this is a Window and not
-        // an in-popover sheet.)
-        if !needsLaunchDialog,
-           let region = instance.regionsWithCapacityAvailable.first,
-           !apiService.selectedSSHKeyName.isEmpty {
-            NSApp.activate(ignoringOtherApps: true)
-            apiService.launchInstance(
-                typeName: instance.instanceType.name,
-                regionName: region.name,
-                instanceDescription: instance.instanceType.description,
-                regionDescription: region.description
-            )
-            openWindow(id: "launch")
+    /// Enabling auto-launch opens the launch dialog so the user can choose the
+    /// SSH key + image to use when the instance later becomes available.
+    private func beginAutoLaunchConfig() {
+        guard !apiService.sshKeys.isEmpty else {
+            openSettingsWindow()
             return
         }
-
-        apiService.pendingLaunch = instance
+        apiService.pendingAutoLaunchConfig = instance
         NSApp.activate(ignoringOtherApps: true)
         openWindow(id: "launch")
     }
@@ -218,8 +202,8 @@ public struct InstanceRowView: View {
         Toggle(isOn: Binding(
             get: { isAutoLaunch },
             set: { newValue in
-                if newValue && apiService.selectedSSHKeyName.isEmpty {
-                    openSettingsWindow()
+                if newValue {
+                    beginAutoLaunchConfig()
                 } else {
                     apiService.toggleAutoLaunch(for: instance.instanceType.name)
                 }
@@ -261,10 +245,10 @@ public struct InstanceRowView: View {
 
         if isWatched {
             Button {
-                if !isAutoLaunch && apiService.selectedSSHKeyName.isEmpty {
-                    openSettingsWindow()
-                } else {
+                if isAutoLaunch {
                     apiService.toggleAutoLaunch(for: instance.instanceType.name)
+                } else {
+                    beginAutoLaunchConfig()
                 }
             } label: {
                 if isAutoLaunch {
@@ -299,15 +283,25 @@ public struct LaunchWindowView: View {
     }
 
     private var isFinished: Bool {
-        apiService.pendingLaunch == nil && apiService.activeLaunchProgress == nil
+        apiService.pendingLaunch == nil
+            && apiService.pendingAutoLaunchConfig == nil
+            && apiService.activeLaunchProgress == nil
     }
 
     public var body: some View {
         Group {
-            if let progress = apiService.activeLaunchProgress {
+            // The configuration form stays mounted for the whole launch — it
+            // shows its progress spinner inline once the request starts — so
+            // the user sees a single launch dialog, not a form followed by a
+            // separate spinner window.
+            if let instance = apiService.pendingLaunch {
+                LaunchConfigurationForm(instance: instance, apiService: apiService, mode: .launch)
+            } else if let instance = apiService.pendingAutoLaunchConfig {
+                LaunchConfigurationForm(instance: instance, apiService: apiService, mode: .autoLaunch)
+            } else if let progress = apiService.activeLaunchProgress {
+                // Fallback for any launch not driven by the dialog (e.g. a
+                // direct call); the dialog path clears `pendingLaunch` last.
                 LaunchInProgressView(progress: progress)
-            } else if let instance = apiService.pendingLaunch {
-                LaunchConfigurationForm(instance: instance, apiService: apiService)
             } else {
                 Color.clear.frame(width: 1, height: 1)
             }
@@ -319,26 +313,48 @@ public struct LaunchWindowView: View {
 }
 
 private struct LaunchConfigurationForm: View {
+    enum Mode {
+        /// Configure and launch an available instance right now.
+        case launch
+        /// Configure the SSH key + image to use when a watched type later
+        /// auto-launches; confirming stores the choice instead of launching.
+        case autoLaunch
+    }
+
     let instance: OfferedInstanceType
     var apiService: LambdaAPIService
+    let mode: Mode
 
     @State private var selectedRegionName: String
     @State private var selectedKeyName: String
+    @State private var selectedImageFamily: String
 
-    init(instance: OfferedInstanceType, apiService: LambdaAPIService) {
+    init(instance: OfferedInstanceType, apiService: LambdaAPIService, mode: Mode) {
         self.instance = instance
         self.apiService = apiService
+        self.mode = mode
+
         let regions = instance.regionsWithCapacityAvailable
         _selectedRegionName = State(initialValue: regions.first?.name ?? "")
+
+        // Preselect the last-used SSH key when it still exists, otherwise the
+        // first available key.
         let keys = apiService.sshKeys
-        let stored = apiService.selectedSSHKeyName
+        let storedKey = apiService.selectedSSHKeyName
         let initialKey: String
-        if !stored.isEmpty, keys.contains(where: { $0.name == stored }) {
-            initialKey = stored
+        if !storedKey.isEmpty, keys.contains(where: { $0.name == storedKey }) {
+            initialKey = storedKey
         } else {
             initialKey = keys.first?.name ?? ""
         }
         _selectedKeyName = State(initialValue: initialKey)
+
+        // Preselect the last-used image family when it still exists; "" maps to
+        // the default Lambda Stack image.
+        let storedImage = apiService.selectedImageFamily
+        let initialImage = (storedImage.isEmpty || apiService.imageFamilies.contains(storedImage))
+            ? storedImage : ""
+        _selectedImageFamily = State(initialValue: initialImage)
     }
 
     private var selectedRegionDescription: String {
@@ -347,58 +363,111 @@ private struct LaunchConfigurationForm: View {
             .description ?? selectedRegionName
     }
 
+    private var title: String {
+        switch mode {
+        case .launch: return "Launch \(instance.instanceType.description)"
+        case .autoLaunch: return "Auto-launch \(instance.instanceType.description)"
+        }
+    }
+
+    private var confirmTitle: String {
+        switch mode {
+        case .launch: return "Launch"
+        case .autoLaunch: return "Enable Auto-launch"
+        }
+    }
+
+    private var confirmDisabled: Bool {
+        if selectedKeyName.isEmpty { return true }
+        // The region picker only matters for an immediate launch; an
+        // auto-launch picks its region when capacity appears.
+        return mode == .launch && selectedRegionName.isEmpty
+    }
+
+    /// True once this instance's launch request is in flight, so the dialog
+    /// swaps its action buttons for an inline spinner instead of opening a
+    /// separate progress window.
+    private var isLaunching: Bool {
+        apiService.activeLaunchProgress?.typeName == instance.instanceType.name
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Launch \(instance.instanceType.description)")
-                .font(.headline)
-            Text(instance.instanceType.formattedPrice)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // Headline row. While launching, the spinner + "Launching…" take
+            // the title's place, matching the terminate dialog's size and
+            // placement (regular spinner, headline font, same line).
+            HStack(spacing: 12) {
+                if isLaunching {
+                    ProgressView()
+                        .controlSize(.regular)
+                }
+                Text(isLaunching ? "Launching…" : title)
+                    .font(.headline)
+                    .accessibilityIdentifier(isLaunching ? "launch-progress-title" : "launch-sheet-title")
+            }
+            .frame(maxWidth: .infinity, alignment: isLaunching ? .center : .leading)
+
+            if mode == .autoLaunch {
+                Text("These settings will be used when this instance type becomes available.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Form {
-                if instance.regionsWithCapacityAvailable.count > 1 {
+                LabeledContent("Price") {
+                    Text(instance.instanceType.formattedPrice)
+                }
+                .accessibilityIdentifier("launch-sheet-price")
+
+                if mode == .launch && instance.regionsWithCapacityAvailable.count > 1 {
                     Picker("Region", selection: $selectedRegionName) {
                         ForEach(instance.regionsWithCapacityAvailable) { region in
                             Text(region.description).tag(region.name)
                         }
                     }
+                    .pickerStyle(.menu)
                     .accessibilityIdentifier("launch-sheet-region")
                 }
-                if apiService.sshKeys.count > 1 {
-                    Picker("SSH Key", selection: $selectedKeyName) {
-                        ForEach(apiService.sshKeys) { key in
-                            Text(key.name).tag(key.name)
-                        }
-                    }
-                    .accessibilityIdentifier("launch-sheet-ssh-key")
-                }
-            }
-            .formStyle(.grouped)
-            .frame(maxWidth: .infinity)
 
-            HStack {
-                Button("Cancel") { apiService.pendingLaunch = nil }
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityIdentifier("launch-sheet-cancel")
-                Spacer()
-                Button("Launch") {
-                    if !selectedKeyName.isEmpty {
-                        apiService.selectedSSHKeyName = selectedKeyName
+                // Always shown as a dropdown, even with a single option, so the
+                // active SSH key is explicit at launch time.
+                Picker("SSH Key", selection: $selectedKeyName) {
+                    ForEach(apiService.sshKeys) { key in
+                        Text(key.name).tag(key.name)
                     }
-                    // Start the request first so `activeLaunchProgress` is set
-                    // before we clear `pendingLaunch` — the window swaps to the
-                    // spinner in place rather than briefly looking finished.
-                    apiService.launchInstance(
-                        typeName: instance.instanceType.name,
-                        regionName: selectedRegionName,
-                        instanceDescription: instance.instanceType.description,
-                        regionDescription: selectedRegionDescription
-                    )
-                    apiService.pendingLaunch = nil
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(selectedRegionName.isEmpty || selectedKeyName.isEmpty)
-                .accessibilityIdentifier("launch-sheet-confirm")
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("launch-sheet-ssh-key")
+
+                // Always shown as a dropdown, even with a single option.
+                Picker("Image", selection: $selectedImageFamily) {
+                    Text("Lambda Stack (latest)").tag("")
+                    ForEach(apiService.imageFamilies, id: \.self) { family in
+                        Text(family).tag(family)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("launch-sheet-image")
+            }
+            // Columns style (not grouped): grouped forms are backed by a
+            // scroll view that collapses to zero height in a content-sized
+            // window, leaving the pickers cramped and unhittable.
+            .formStyle(.columns)
+            .frame(maxWidth: .infinity)
+            .disabled(isLaunching)
+
+            if !isLaunching {
+                HStack {
+                    Button("Cancel") { cancel() }
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("launch-sheet-cancel")
+                    Spacer()
+                    Button(confirmTitle) { confirm() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(confirmDisabled)
+                        .accessibilityIdentifier("launch-sheet-confirm")
+                }
             }
         }
         .padding(20)
@@ -406,6 +475,46 @@ private struct LaunchConfigurationForm: View {
         // No `.accessibilityIdentifier` at the root: SwiftUI propagates a root
         // identifier down to descendants and overrides the per-control
         // identifiers (`launch-sheet-confirm`, etc.) tests need to query.
+    }
+
+    private func cancel() {
+        switch mode {
+        case .launch: apiService.pendingLaunch = nil
+        case .autoLaunch: apiService.pendingAutoLaunchConfig = nil
+        }
+    }
+
+    private func confirm() {
+        switch mode {
+        case .launch:
+            // Persist the choices as the new last-used values so the next
+            // dialog preselects them.
+            if !selectedKeyName.isEmpty {
+                apiService.selectedSSHKeyName = selectedKeyName
+            }
+            apiService.selectedImageFamily = selectedImageFamily
+            // Keep `pendingLaunch` set so this same dialog stays mounted and
+            // shows its spinner inline; the service clears it when the launch
+            // finishes, which dismisses the window. Pass the picked SSH key and
+            // image explicitly so the dialog's selection — not just the global
+            // last-used value — drives this launch.
+            apiService.launchInstance(
+                typeName: instance.instanceType.name,
+                regionName: selectedRegionName,
+                instanceDescription: instance.instanceType.description,
+                regionDescription: selectedRegionDescription,
+                sshKeyName: selectedKeyName,
+                imageFamily: selectedImageFamily
+            )
+
+        case .autoLaunch:
+            apiService.configureAutoLaunch(
+                typeName: instance.instanceType.name,
+                sshKeyName: selectedKeyName,
+                imageFamily: selectedImageFamily
+            )
+            apiService.pendingAutoLaunchConfig = nil
+        }
     }
 }
 

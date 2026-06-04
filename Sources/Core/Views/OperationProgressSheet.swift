@@ -59,6 +59,7 @@ struct TerminateInProgressView: View {
                     .font(.headline)
                     .accessibilityIdentifier("terminate-progress-title")
             }
+            .frame(maxWidth: .infinity, alignment: .center)
 
             VStack(alignment: .leading, spacing: 8) {
                 detailRow(label: "Instance", value: progress.instanceDescription)

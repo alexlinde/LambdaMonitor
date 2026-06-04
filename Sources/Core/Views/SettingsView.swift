@@ -62,68 +62,6 @@ public struct SettingsView: View {
 
                 Divider()
 
-                if apiService.sshKeys.isEmpty && !apiService.isLoadingSSHKeys {
-                    LabeledContent("SSH Key") {
-                        Text("No keys found")
-                            .foregroundStyle(.secondary)
-                    }
-                } else if apiService.isLoadingSSHKeys && apiService.sshKeys.isEmpty {
-                    LabeledContent("SSH Key") {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                            .frame(width: 14, height: 14)
-                    }
-                } else {
-                    Picker("SSH Key", selection: Binding(
-                        get: { apiService.selectedSSHKeyName },
-                        set: { apiService.selectedSSHKeyName = $0 }
-                    )) {
-                        ForEach(apiService.sshKeys) { key in
-                            Text(key.name).tag(key.name)
-                        }
-                    }
-                }
-
-                LabeledContent("") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Button("Refresh") {
-                            apiService.fetchSSHKeys()
-                        }
-                        .disabled(apiService.isLoadingSSHKeys)
-
-                        Text("Manage keys at [cloud.lambdalabs.com/ssh-keys](https://cloud.lambdalabs.com/ssh-keys)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
-                Picker("Default Image", selection: Binding(
-                    get: { apiService.selectedImageFamily },
-                    set: { apiService.selectedImageFamily = $0 }
-                )) {
-                    Text("Not Specified").tag("")
-                    ForEach(apiService.imageFamilies, id: \.self) { family in
-                        Text(family).tag(family)
-                    }
-                }
-
-                LabeledContent("") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Button("Refresh") {
-                            apiService.fetchImages()
-                        }
-                        .disabled(apiService.isLoadingImages)
-
-                        Text("When unspecified, instances launch with the latest Lambda Stack image.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
                 Toggle("Launch at Login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
                         do {

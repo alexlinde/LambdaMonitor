@@ -178,6 +178,52 @@ final class LambdaMonitorLaunchTests: LambdaMonitorUITestCase {
         )
     }
 
+    func testLaunchWithDifferentSSHKeyAndImagePassesThemThrough() {
+        let launch = window.buttons["launch-button-gpu_1x_h100_sxm5"]
+        XCTAssertTrue(launch.waitForExistence(timeout: 5))
+        launch.click()
+
+        let launchWindow = app.windows["Launch Instance"]
+        XCTAssertTrue(launchWindow.waitForExistence(timeout: 5))
+
+        // Pick a non-default SSH key. The mock seeds two keys and the app
+        // preselects "my-laptop", so choosing "work-desktop" is a real change.
+        let sshPicker = launchWindow.popUpButtons["launch-sheet-ssh-key"]
+        XCTAssertTrue(sshPicker.waitForExistence(timeout: 5), "SSH key dropdown should be present")
+        sshPicker.click()
+        let workDesktop = app.menuItems["work-desktop"]
+        XCTAssertTrue(workDesktop.waitForExistence(timeout: 3))
+        workDesktop.click()
+
+        // Pick a non-default image family (default is "Lambda Stack (latest)").
+        let imagePicker = launchWindow.popUpButtons["launch-sheet-image"]
+        XCTAssertTrue(imagePicker.waitForExistence(timeout: 3), "Image dropdown should be present")
+        imagePicker.click()
+        let ubuntu = app.menuItems["ubuntu-lts"]
+        XCTAssertTrue(ubuntu.waitForExistence(timeout: 3))
+        ubuntu.click()
+
+        launchWindow.buttons["launch-sheet-confirm"].click()
+        XCTAssertTrue(
+            waitFor({ !launchWindow.exists }, timeout: 8),
+            "Launch window should close after the launch completes"
+        )
+        window.buttons["refresh-button"].click()
+
+        // The deterministic mock encodes the SSH key + image family it actually
+        // received into the synthesized running instance's identifier, so a row
+        // containing both proves the dialog's selection reached the API.
+        let newRow = window.descendants(matching: .any)
+            .matching(NSPredicate(
+                format: "identifier CONTAINS 'work-desktop' AND identifier CONTAINS 'ubuntu-lts'"
+            ))
+            .firstMatch
+        XCTAssertTrue(
+            newRow.waitForExistence(timeout: 5),
+            "Launched row should encode the selected SSH key and image, proving they were sent to the API"
+        )
+    }
+
     func testLaunchSheetCancelDoesNotLaunch() {
         let launch = window.buttons["launch-button-gpu_1x_h100_sxm5"]
         XCTAssertTrue(launch.waitForExistence(timeout: 5))

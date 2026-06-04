@@ -353,15 +353,21 @@ extension MockAPIClient {
                   let region = knownRegions[regionName] else { return }
 
             launchSequence += 1
+            // Encode the SSH key + image family that were actually sent to the
+            // API into the synthesized instance's identifier so XCUITest can
+            // assert the launch dialog's selection flowed through (the running
+            // row's identifier is `running-row-<id>`).
+            let launchedKey = mock.lastLaunchedSSHKeyNames?.first ?? "nokey"
+            let launchedImage = mock.lastLaunchedImageFamily ?? "default"
             let new = RunningInstance(
-                id: String(format: "i-uitest%08x", launchSequence),
+                id: "i-uitest-\(launchedKey)-\(launchedImage)-\(launchSequence)",
                 name: nil,
                 status: "active",
                 region: region,
                 instanceType: info,
                 hostname: "uitest-\(typeName).cloud.lambdalabs.com",
                 ip: "10.0.0.\(launchSequence % 254 + 1)",
-                sshKeyNames: ["my-laptop"],
+                sshKeyNames: mock.lastLaunchedSSHKeyNames ?? [],
                 fileSystemNames: [],
                 jupyterToken: nil,
                 jupyterUrl: nil
