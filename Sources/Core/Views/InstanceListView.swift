@@ -1,9 +1,24 @@
 import SwiftUI
 import AppKit
 
+/// Bubbles the measured height of the instance-list VStack up to the ScrollView
+/// without a GeometryReader layout feedback loop (reader lives in `.background`).
+private struct ListContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 public struct InstanceListView: View {
     public var apiService: LambdaAPIService
     @Environment(\.openWindow) private var openWindow
+    /// Ideal height of the scroll content; drives an explicit ScrollView frame.
+    /// On macOS 26, `ScrollView` + `.frame(maxHeight:)` inside `MenuBarExtra(.window)`
+    /// collapses to ~0 because `maxHeight` alone provides no ideal height.
+    @State private var listContentHeight: CGFloat = 0
+
+    private let listMaxHeight: CGFloat = 400
 
     public init(apiService: LambdaAPIService) {
         self.apiService = apiService
@@ -121,6 +136,11 @@ public struct InstanceListView: View {
         apiService.instances.filter { !$0.isAvailable && !apiService.isWatched($0.instanceType.name) }
     }
 
+    private var listHeight: CGFloat {
+        guard listContentHeight > 0 else { return listMaxHeight }
+        return min(listContentHeight, listMaxHeight)
+    }
+
     private var instanceList: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -157,8 +177,20 @@ public struct InstanceListView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: ListContentHeightKey.self, value: geo.size.height)
+                }
+            )
         }
-        .frame(maxHeight: 400)
+        // Explicit height (content up to cap). `maxHeight` alone collapses the
+        // viewport inside MenuBarExtra(.window) on macOS 26.
+        .frame(height: listHeight)
+        .onPreferenceChange(ListContentHeightKey.self) { measured in
+            if abs(measured - listContentHeight) > 0.5 {
+                listContentHeight = measured
+            }
+        }
     }
 
     private func sectionHeader(_ title: String) -> some View {

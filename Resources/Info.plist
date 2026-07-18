@@ -9,9 +9,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.lambda-monitor</string>
     <key>CFBundleVersion</key>
-    <string>1.10</string>
+    <string>1.11</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.10</string>
+    <string>1.11</string>
     <key>CFBundleIconFile</key>
     <string>lambda</string>
     <key>CFBundleIconName</key>

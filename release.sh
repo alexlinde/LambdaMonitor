@@ -5,7 +5,7 @@ APP_NAME="LambdaMonitor"
 BUNDLE_ID="com.lambda-monitor"
 IDENTITY="Developer ID Application: Alex Linde (TN7Z2D3D5R)"
 NOTARY_PROFILE="LambdaMonitor"
-VERSION="1.10"
+VERSION="1.11"
 ICON_NAME="lambda"
 
 STAGING=".build/release-staging"
