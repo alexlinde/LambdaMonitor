@@ -12,6 +12,8 @@ write_plist() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>LambdaMonitor</string>
     <key>CFBundleIdentifier</key>
