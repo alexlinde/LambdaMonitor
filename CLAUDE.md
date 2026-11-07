@@ -43,7 +43,7 @@ Output: `.build/LambdaMonitor.dmg` — a drag-to-Applications DMG, notarized and
 
 ```bash
 cd LambdaMonitor
-swift test                                # all unit tests (~47)
+swift test                                # all unit tests (~74)
 swift test --filter ModelTests            # JSON decoding tests
 swift test --filter LambdaAPIServiceTests # service logic tests
 swift test --filter LiveAPIClientTests    # HTTP behavior tests
@@ -134,7 +134,7 @@ release.sh                            — Release pipeline: build → sign → D
 
 ## Lambda API
 
-- Endpoint: `GET https://cloud.lambdalabs.com/api/v1/instance-types`
+- Endpoint: `GET https://cloud.lambda.ai/api/v1/instance-types`
 - Auth: `Authorization: Bearer {key}`
 - Response: `{ "data": { "<type_name>": { "instance_type": {...}, "regions_with_capacity_available": [...] } } }`
 

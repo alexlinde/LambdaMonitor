@@ -30,7 +30,7 @@ public struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) {
                             Button("Test") {
-                                testAPIKey()
+                                testAndSaveAPIKey()
                             }
                             .disabled(apiKey.isEmpty || isTesting)
                             .accessibilityIdentifier("settings-test-button")
@@ -53,7 +53,7 @@ public struct SettingsView: View {
                             resultBanner(result)
                         }
 
-                        Text("Get your key from [cloud.lambdalabs.com/api-keys](https://cloud.lambdalabs.com/api-keys)")
+                        Text("Get your key from [cloud.lambda.ai/api-keys](https://cloud.lambda.ai/api-keys)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.top, 2)
@@ -98,9 +98,12 @@ public struct SettingsView: View {
         // every descendant in SwiftUI, overriding per-control identifiers like
         // `settings-api-key-field` that tests query.
         .onAppear {
-            if let existing = apiService.resolvedAPIKey {
+            // Prefill with the existing key and validate it for the banner
+            // only — no Keychain write and no refresh restart. Saving happens
+            // exclusively via the explicit Test button.
+            if let existing = apiService.resolvedAPIKey, !existing.isEmpty {
                 apiKey = existing
-                testAPIKey()
+                validateAPIKey()
             }
             if apiService.sshKeys.isEmpty && apiService.hasAPIKey {
                 apiService.fetchSSHKeys()
@@ -126,19 +129,40 @@ public struct SettingsView: View {
         }
     }
 
-    private func testAPIKey() {
+    /// Validation-only check used on appear: shows the valid/invalid banner
+    /// without persisting anything or touching auto-refresh.
+    private func validateAPIKey() {
+        let key = apiKey
         isTesting = true
         testResult = nil
         Task {
-            let result = await apiService.testAPIKey(apiKey)
+            let result = await apiService.testAPIKey(key)
             isTesting = false
             switch result {
             case .success:
-                let saved = KeychainService.save(apiKey: apiKey)
-                if saved {
+                testResult = .success
+            case .failure(let error):
+                testResult = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Explicit Test button: validates, then saves (via the service, which
+    /// never writes the Keychain in mock/UI-test override mode) and
+    /// (re)starts auto-refresh. `startAutoRefresh()` also fetches SSH keys
+    /// and images.
+    private func testAndSaveAPIKey() {
+        let key = apiKey
+        isTesting = true
+        testResult = nil
+        Task {
+            let result = await apiService.testAPIKey(key)
+            isTesting = false
+            switch result {
+            case .success:
+                if apiService.saveAPIKey(key) {
                     testResult = .success
                     apiService.startAutoRefresh()
-                    apiService.fetchSSHKeys()
                 } else {
                     testResult = .failure("Failed to save key to Keychain")
                 }
@@ -162,22 +186,16 @@ public struct SettingsView: View {
         alert.buttons.first?.hasDestructiveAction = true
 
         if alert.runModal() == .alertFirstButtonReturn {
-            KeychainService.delete()
+            apiService.clearAPIKey()
             apiKey = ""
             testResult = nil
-            apiService.stopAutoRefresh()
-            apiService.instances = []
-            apiService.sshKeys = []
-            apiService.selectedSSHKeyName = ""
-            apiService.images = []
-            apiService.selectedImageFamily = ""
-            apiService.error = "No API key configured"
         }
     }
 }
 
 // MARK: - Previews
 
+#if DEBUG
 #Preview("With Keys") {
     SettingsView(apiService: PreviewService.populated())
 }
@@ -185,3 +203,4 @@ public struct SettingsView: View {
 #Preview("No API Key") {
     SettingsView(apiService: PreviewService.empty())
 }
+#endif

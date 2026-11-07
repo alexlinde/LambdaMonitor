@@ -181,6 +181,7 @@ public struct InstanceRowView: View {
             openSettingsWindow()
             return
         }
+        apiService.pendingAutoLaunchConfig = nil
         apiService.pendingLaunch = instance
         NSApp.activate(ignoringOtherApps: true)
         openWindow(id: "launch")
@@ -193,6 +194,10 @@ public struct InstanceRowView: View {
             openSettingsWindow()
             return
         }
+        // Don't open the auto-launch config while a launch is in flight; it
+        // would otherwise compete with the launch dialog.
+        guard apiService.activeLaunchProgress == nil else { return }
+        apiService.pendingLaunch = nil
         apiService.pendingAutoLaunchConfig = instance
         NSApp.activate(ignoringOtherApps: true)
         openWindow(id: "launch")
@@ -296,8 +301,10 @@ public struct LaunchWindowView: View {
             // separate spinner window.
             if let instance = apiService.pendingLaunch {
                 LaunchConfigurationForm(instance: instance, apiService: apiService, mode: .launch)
+                    .id("launch-\(instance.instanceType.name)")
             } else if let instance = apiService.pendingAutoLaunchConfig {
                 LaunchConfigurationForm(instance: instance, apiService: apiService, mode: .autoLaunch)
+                    .id("auto-\(instance.instanceType.name)")
             } else if let progress = apiService.activeLaunchProgress {
                 // Fallback for any launch not driven by the dialog (e.g. a
                 // direct call); the dialog path clears `pendingLaunch` last.
@@ -308,6 +315,13 @@ public struct LaunchWindowView: View {
         }
         .onChange(of: isFinished) { _, finished in
             if finished { dismiss() }
+        }
+        .onDisappear {
+            // Closing via the title-bar button must not leave stale pending
+            // state behind. A launch in flight clears `pendingLaunch` itself.
+            guard apiService.activeLaunchProgress == nil else { return }
+            apiService.pendingLaunch = nil
+            apiService.pendingAutoLaunchConfig = nil
         }
     }
 }
@@ -520,6 +534,7 @@ private struct LaunchConfigurationForm: View {
 
 // MARK: - Previews
 
+#if DEBUG
 #Preview("Available (expanded)") {
     let service = PreviewService.populated()
     InstanceRowView(instance: MockData.h100x1Available, apiService: service)
@@ -545,3 +560,4 @@ private struct LaunchConfigurationForm: View {
     return InstanceRowView(instance: instance, apiService: service)
         .padding()
 }
+#endif

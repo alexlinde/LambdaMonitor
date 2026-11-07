@@ -21,7 +21,7 @@ write_plist() {
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+    <string>15.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>CFBundleIconFile</key>

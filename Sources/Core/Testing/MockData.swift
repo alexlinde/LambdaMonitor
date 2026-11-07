@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 
 public enum MockData {
@@ -506,3 +507,4 @@ public enum PreviewService {
         return service
     }
 }
+#endif

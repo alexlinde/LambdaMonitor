@@ -18,12 +18,12 @@ public protocol APIClient: Sendable {
 // MARK: - Live Implementation
 
 public struct LiveAPIClient: APIClient {
-    private static let baseURL = "https://cloud.lambdalabs.com/api/v1"
+    private static let baseURL = "https://cloud.lambda.ai/api/v1"
 
     /// Builds the configuration used by the production session. Exposed at
     /// package level so tests can verify the cookie-isolation settings.
     ///
-    /// Why disable cookies? `cloud.lambdalabs.com` returns a `sessionid` cookie
+    /// Why disable cookies? `cloud.lambda.ai` returns a `sessionid` cookie
     /// on every response (it's the same origin as the web dashboard). If we used
     /// `URLSession.shared`, that cookie would be stored in
     /// `HTTPCookieStorage.shared` and re-sent on subsequent requests. Lambda's
@@ -56,7 +56,7 @@ public struct LiveAPIClient: APIClient {
     public func fetchInstanceTypes(apiKey: String) async throws -> [OfferedInstanceType] {
         let request = Self.makeRequest(path: "/instance-types", apiKey: apiKey)
         let (data, response) = try await session.data(for: request)
-        try Self.validateResponse(response)
+        try Self.validate(data: data, response: response)
         let decoded = try JSONDecoder().decode(LambdaAPIResponse.self, from: data)
         return Array(decoded.data.values)
     }
@@ -64,7 +64,7 @@ public struct LiveAPIClient: APIClient {
     public func fetchRunningInstances(apiKey: String) async throws -> [RunningInstance] {
         let request = Self.makeRequest(path: "/instances", apiKey: apiKey)
         let (data, response) = try await session.data(for: request)
-        try Self.validateResponse(response)
+        try Self.validate(data: data, response: response)
         let decoded = try JSONDecoder().decode(RunningInstancesResponse.self, from: data)
         return decoded.data
     }
@@ -72,7 +72,7 @@ public struct LiveAPIClient: APIClient {
     public func fetchSSHKeys(apiKey: String) async throws -> [SSHKey] {
         let request = Self.makeRequest(path: "/ssh-keys", apiKey: apiKey)
         let (data, response) = try await session.data(for: request)
-        try Self.validateResponse(response)
+        try Self.validate(data: data, response: response)
         let decoded = try JSONDecoder().decode(SSHKeysResponse.self, from: data)
         return decoded.data
     }
@@ -80,7 +80,7 @@ public struct LiveAPIClient: APIClient {
     public func fetchImages(apiKey: String) async throws -> [LambdaImage] {
         let request = Self.makeRequest(path: "/images", apiKey: apiKey)
         let (data, response) = try await session.data(for: request)
-        try Self.validateResponse(response)
+        try Self.validate(data: data, response: response)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let decoded = try decoder.decode(ImagesResponse.self, from: data)
@@ -108,18 +108,7 @@ public struct LiveAPIClient: APIClient {
 
         let (data, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw APIError.invalidResponse
-        }
-        guard httpResponse.statusCode == 200 else {
-            if let errorResponse = try? JSONDecoder().decode(LambdaErrorResponse.self, from: data) {
-                throw APIError.serverError(errorResponse.error.message)
-            }
-            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-                throw APIError.unauthorized
-            }
-            throw APIError.httpError(httpResponse.statusCode)
-        }
+        try Self.validate(data: data, response: response)
 
         let decoded = try JSONDecoder().decode(LaunchInstanceResponse.self, from: data)
         return decoded.data.instanceIds
@@ -134,15 +123,7 @@ public struct LiveAPIClient: APIClient {
 
         let (data, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw APIError.invalidResponse
-        }
-        guard httpResponse.statusCode == 200 else {
-            if let errorResponse = try? JSONDecoder().decode(LambdaErrorResponse.self, from: data) {
-                throw APIError.serverError(errorResponse.error.message)
-            }
-            throw APIError.httpError(httpResponse.statusCode)
-        }
+        try Self.validate(data: data, response: response)
     }
 
     // MARK: - Helpers
@@ -159,111 +140,21 @@ public struct LiveAPIClient: APIClient {
         return request
     }
 
-    private static func validateResponse(_ response: URLResponse) throws {
-        guard let httpResponse = response as? HTTPURLResponse else {
+    /// Single place that maps HTTP failures to `APIError`.
+    /// Non-HTTP -> invalidResponse; 2xx -> ok; 401 -> unauthorized; a
+    /// decodable error body -> serverError(message); 403 -> unauthorized;
+    /// anything else -> httpError(code).
+    static func validate(data: Data, response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else {
             throw APIError.invalidResponse
         }
-        guard httpResponse.statusCode == 200 else {
-            if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-                throw APIError.unauthorized
-            }
-            throw APIError.httpError(httpResponse.statusCode)
+        let code = http.statusCode
+        if (200..<300).contains(code) { return }
+        if code == 401 { throw APIError.unauthorized }
+        if let err = try? JSONDecoder().decode(LambdaErrorResponse.self, from: data) {
+            throw APIError.serverError(err.error.message)
         }
-    }
-}
-
-// MARK: - Mock Implementation
-
-public final class MockAPIClient: APIClient, @unchecked Sendable {
-    public var instanceTypesResult: Result<[OfferedInstanceType], Error> = .success([])
-    public var runningInstancesResult: Result<[RunningInstance], Error> = .success([])
-    public var sshKeysResult: Result<[SSHKey], Error> = .success([])
-    public var imagesResult: Result<[LambdaImage], Error> = .success([])
-    public var launchResult: Result<[String], Error> = .success(["i-mock-00000001"])
-    public var terminateResult: Result<Void, Error> = .success(())
-
-    public var delay: Duration = .zero
-
-    /// Optional separate delay for the mutating launch/terminate calls. When
-    /// set, these operations sleep for this duration instead of `delay`. UI
-    /// tests use this to keep the progress spinner on screen long enough for
-    /// XCUITest to observe it, without slowing down the (frequent) fetch calls.
-    public var operationDelay: Duration?
-
-    public var fetchInstanceTypesCallCount = 0
-    public var fetchRunningInstancesCallCount = 0
-    public var launchCallCount = 0
-    public var lastLaunchedTypeName: String?
-    public var lastLaunchedRegion: String?
-    public var lastLaunchedSSHKeyNames: [String]?
-    public var lastLaunchedImageFamily: String?
-    public var terminateCallCount = 0
-    public var lastTerminatedIds: [String]?
-
-    /// When set, called instead of returning `instanceTypesResult`.
-    /// Allows responses to change between fetches for simulation scenarios.
-    public var onFetchInstanceTypes: ((String) async throws -> [OfferedInstanceType])?
-
-    /// When set, called after a successful launch with the launched type/region.
-    /// Allows simulation factories to mutate `runningInstancesResult` so the new
-    /// instance appears on the next fetch.
-    public var onLaunchInstance: ((_ typeName: String, _ regionName: String) -> Void)?
-
-    public init() {}
-
-    public func fetchInstanceTypes(apiKey: String) async throws -> [OfferedInstanceType] {
-        if delay > .zero { try await Task.sleep(for: delay) }
-        fetchInstanceTypesCallCount += 1
-        if let handler = onFetchInstanceTypes {
-            return try await handler(apiKey)
-        }
-        return try instanceTypesResult.get()
-    }
-
-    public func fetchRunningInstances(apiKey: String) async throws -> [RunningInstance] {
-        if delay > .zero { try await Task.sleep(for: delay) }
-        fetchRunningInstancesCallCount += 1
-        return try runningInstancesResult.get()
-    }
-
-    public func fetchSSHKeys(apiKey: String) async throws -> [SSHKey] {
-        if delay > .zero { try await Task.sleep(for: delay) }
-        return try sshKeysResult.get()
-    }
-
-    public func fetchImages(apiKey: String) async throws -> [LambdaImage] {
-        if delay > .zero { try await Task.sleep(for: delay) }
-        return try imagesResult.get()
-    }
-
-    public func launchInstance(
-        apiKey: String,
-        typeName: String,
-        regionName: String,
-        sshKeyNames: [String],
-        imageFamily: String?
-    ) async throws -> [String] {
-        let opDelay = operationDelay ?? delay
-        if opDelay > .zero { try await Task.sleep(for: opDelay) }
-        launchCallCount += 1
-        lastLaunchedTypeName = typeName
-        lastLaunchedRegion = regionName
-        lastLaunchedSSHKeyNames = sshKeyNames
-        lastLaunchedImageFamily = imageFamily
-        let result = try launchResult.get()
-        onLaunchInstance?(typeName, regionName)
-        return result
-    }
-
-    public func terminateInstance(apiKey: String, instanceIds: [String]) async throws {
-        let opDelay = operationDelay ?? delay
-        if opDelay > .zero { try await Task.sleep(for: opDelay) }
-        terminateCallCount += 1
-        lastTerminatedIds = instanceIds
-        try terminateResult.get()
-        if case .success(let existing) = runningInstancesResult {
-            let toRemove = Set(instanceIds)
-            runningInstancesResult = .success(existing.filter { !toRemove.contains($0.id) })
-        }
+        if code == 403 { throw APIError.unauthorized }
+        throw APIError.httpError(code)
     }
 }

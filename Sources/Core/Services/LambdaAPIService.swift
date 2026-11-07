@@ -10,13 +10,31 @@ public final class LambdaAPIService {
         static let autoLaunchConfigs = "autoLaunchConfigs"
         static let sshKeyName = "sshKeyName"
         static let imageFamily = "imageFamily"
+
+        static let all = [watchedTypes, autoLaunchTypes, autoLaunchConfigs, sshKeyName, imageFamily]
     }
+
+    /// Every `UserDefaults` key the service persists. Exposed so UI-test /
+    /// unit-test resets clear exactly the keys in use and can't drift.
+    public static let persistedDefaultsKeys: [String] = DefaultsKey.all
 
     public var instances: [OfferedInstanceType] = []
     public var runningInstances: [RunningInstance] = []
     public var lastUpdated: Date?
     public var error: String?
+    /// True while at least one `performFetch` is in flight. Settable so
+    /// previews can force the loading state.
     public var isLoading = false
+
+    /// Set when the most recently applied fetch could not load the running
+    /// instance list. The previous list is kept (so the menu-bar badge doesn't
+    /// drop to zero on a transient failure); cleared on the next success.
+    public private(set) var runningInstancesError: String?
+
+    /// Whether an API key is available (stored in Keychain or overridden).
+    /// Cached so views don't hit the Keychain on every redraw, and stored so
+    /// it is observable.
+    public private(set) var hasStoredAPIKey: Bool
 
     public var sshKeys: [SSHKey] = []
     public var isLoadingSSHKeys = false
@@ -88,12 +106,30 @@ public final class LambdaAPIService {
     private var previousAvailableTypes: Set<String> = []
     private var hasCompletedInitialFetch = false
 
+    /// Monotonic id assigned to each `performFetch` at start. Results are only
+    /// applied when newer than `lastAppliedGeneration`, so overlapping fetches
+    /// (timer, manual refresh, post-launch/terminate) can't apply out of order.
+    private var fetchGeneration = 0
+    private var lastAppliedGeneration = 0
+    private var inFlightFetchCount = 0
+
+    /// Bumped whenever the API key is cleared/replaced, so in-flight SSH key
+    /// and image fetches started under the old key are discarded.
+    private var apiKeyEpoch = 0
+
     private let client: APIClient
     private let apiKeyOverride: String?
+    /// In-memory copy of the Keychain key (nil when no key is stored).
+    private var cachedAPIKey: String?
 
     public init(client: APIClient = LiveAPIClient(), apiKeyOverride: String? = nil) {
         self.client = client
         self.apiKeyOverride = apiKeyOverride
+        // Never touch the real Keychain item when running with an override
+        // (mock / UI-test / preview modes).
+        let stored = apiKeyOverride == nil ? KeychainService.load() : nil
+        cachedAPIKey = stored
+        hasStoredAPIKey = apiKeyOverride != nil || !(stored ?? "").isEmpty
         watchedTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.watchedTypes) ?? [])
         autoLaunchTypes = Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.autoLaunchTypes) ?? [])
         if let data = UserDefaults.standard.data(forKey: DefaultsKey.autoLaunchConfigs),
@@ -107,16 +143,58 @@ public final class LambdaAPIService {
     }
 
     public var hasAPIKey: Bool {
-        apiKeyOverride != nil || KeychainService.load() != nil
+        hasStoredAPIKey
     }
 
     public var resolvedAPIKey: String? {
-        if let override = apiKeyOverride { return override }
-        return KeychainService.load()
+        apiKeyOverride ?? cachedAPIKey
     }
 
     public var hasAPIKeyOverride: Bool {
         apiKeyOverride != nil
+    }
+
+    /// Persists `key` to the Keychain and updates the cached state. With an
+    /// `apiKeyOverride` (mock / UI-test mode) this is a no-op that returns
+    /// true: the fake key must never overwrite the real Keychain item.
+    @discardableResult
+    public func saveAPIKey(_ key: String) -> Bool {
+        guard apiKeyOverride == nil else { return true }
+        guard KeychainService.save(apiKey: key) else { return false }
+        if cachedAPIKey != key {
+            apiKeyEpoch += 1
+        }
+        cachedAPIKey = key
+        hasStoredAPIKey = !key.isEmpty
+        return true
+    }
+
+    /// Removes the stored key and resets all account-derived state. In-flight
+    /// fetches are invalidated so they can't repopulate data after clearing.
+    /// No-op with an `apiKeyOverride` (the override can't be cleared).
+    public func clearAPIKey() {
+        guard apiKeyOverride == nil else { return }
+        KeychainService.delete()
+        cachedAPIKey = nil
+        hasStoredAPIKey = false
+        apiKeyEpoch += 1
+
+        stopAutoRefresh()
+        // Discard any fetch currently in flight.
+        fetchGeneration += 1
+        lastAppliedGeneration = fetchGeneration
+
+        instances = []
+        runningInstances = []
+        runningInstancesError = nil
+        sshKeys = []
+        images = []
+        selectedSSHKeyName = ""
+        selectedImageFamily = ""
+        lastUpdated = nil
+        previousAvailableTypes = []
+        hasCompletedInitialFetch = false
+        error = "No API key configured"
     }
 
     // MARK: - Auto-refresh
@@ -144,67 +222,120 @@ public final class LambdaAPIService {
         Task { await self.performFetch() }
     }
 
+    /// Awaitable refresh, for callers that need to know when the data has been
+    /// updated (tests, pull-to-refresh style flows).
+    public func refresh() async {
+        await performFetch()
+    }
+
     /// Awaitable refresh. Used by the periodic timer and `fetch()`, and also
     /// `await`ed by the launch/terminate flows so the progress window stays up
     /// until the running-instance list reflects the change.
+    ///
+    /// Fetches can overlap; each gets a generation number and its results are
+    /// applied only if no newer fetch has already been applied.
     private func performFetch() async {
+        fetchGeneration += 1
+        let generation = fetchGeneration
+
         guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else {
+            lastAppliedGeneration = max(lastAppliedGeneration, generation)
             error = "No API key configured"
             instances = []
             runningInstances = []
             return
         }
 
+        inFlightFetchCount += 1
         isLoading = true
-        error = nil
+        defer {
+            inFlightFetchCount -= 1
+            isLoading = inFlightFetchCount > 0
+        }
 
         async let typesTask = client.fetchInstanceTypes(apiKey: apiKey)
         async let runningTask = client.fetchRunningInstances(apiKey: apiKey)
 
+        let typesResult: Result<[OfferedInstanceType], Error>
         do {
-            let result = try await typesTask
-            self.instances = result.sorted { lhs, rhs in
-                if lhs.isAvailable != rhs.isAvailable {
-                    return lhs.isAvailable
-                }
-                return lhs.instanceType.description.localizedStandardCompare(rhs.instanceType.description) == .orderedAscending
-            }
-            self.lastUpdated = Date()
-            self.error = nil
-
-            let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
-            if self.hasCompletedInitialFetch {
-                let newlyAvailable = currentlyAvailable.subtracting(self.previousAvailableTypes)
-                let autoLaunchCandidates = newlyAvailable.intersection(self.autoLaunchTypes)
-                if let typeName = autoLaunchCandidates.first,
-                   let instance = result.first(where: { $0.instanceType.name == typeName }),
-                   let region = instance.regionsWithCapacityAvailable.first {
-                    // Prefer the per-type choice captured when auto-launch was
-                    // enabled; fall back to the global last-used selection.
-                    let config = self.autoLaunchConfigs[typeName]
-                    let sshKey = config?.sshKeyName ?? self.selectedSSHKeyName
-                    let imageFamily = config?.imageFamily ?? self.selectedImageFamily
-                    if !sshKey.isEmpty {
-                        self.disableAutoLaunch(for: typeName)
-                        self.launchInstance(
-                            typeName: typeName,
-                            regionName: region.name,
-                            autoLaunched: true,
-                            displayName: instance.instanceType.description,
-                            sshKeyName: sshKey,
-                            imageFamily: imageFamily
-                        )
-                    }
-                }
-            }
-            self.previousAvailableTypes = currentlyAvailable
-            self.hasCompletedInitialFetch = true
+            typesResult = .success(try await typesTask)
         } catch {
+            typesResult = .failure(error)
+        }
+        let runningResult: Result<[RunningInstance], Error>
+        do {
+            runningResult = .success(try await runningTask)
+        } catch {
+            runningResult = .failure(error)
+        }
+
+        // Drop stale results: a newer fetch already landed (or the key was
+        // cleared while this one was in flight).
+        guard generation > lastAppliedGeneration else { return }
+        lastAppliedGeneration = generation
+
+        switch typesResult {
+        case .success(let result):
+            applyInstanceTypes(result)
+        case .failure(let error):
             self.error = error.localizedDescription
         }
 
-        self.runningInstances = (try? await runningTask) ?? []
-        self.isLoading = false
+        switch runningResult {
+        case .success(let running):
+            runningInstances = running
+            runningInstancesError = nil
+        case .failure(let error):
+            // Keep the previous list; a transient failure must not look like
+            // "0 running".
+            runningInstancesError = error.localizedDescription
+        }
+    }
+
+    private func applyInstanceTypes(_ result: [OfferedInstanceType]) {
+        instances = result.sorted { lhs, rhs in
+            if lhs.isAvailable != rhs.isAvailable {
+                return lhs.isAvailable
+            }
+            return lhs.instanceType.description.localizedStandardCompare(rhs.instanceType.description) == .orderedAscending
+        }
+        lastUpdated = Date()
+        error = nil
+
+        let currentlyAvailable = Set(result.filter(\.isAvailable).map(\.instanceType.name))
+        if hasCompletedInitialFetch {
+            let newlyAvailable = currentlyAvailable.subtracting(previousAvailableTypes)
+            let autoLaunchCandidates = newlyAvailable.intersection(autoLaunchTypes).sorted()
+            for typeName in autoLaunchCandidates {
+                guard let instance = result.first(where: { $0.instanceType.name == typeName }),
+                      let region = instance.regionsWithCapacityAvailable.first else { continue }
+                // Prefer the per-type choice captured when auto-launch was
+                // enabled; fall back to the global last-used selection.
+                let config = autoLaunchConfigs[typeName]
+                let sshKey = config?.sshKeyName ?? selectedSSHKeyName
+                let imageFamily = config?.imageFamily ?? selectedImageFamily
+                guard !sshKey.isEmpty else {
+                    // Leave auto-launch enabled so it fires once a key is set
+                    // and the type becomes newly available again.
+                    postAutoLaunchFailureNotification(
+                        displayName: instance.instanceType.description,
+                        error: "No SSH key configured for auto-launch"
+                    )
+                    continue
+                }
+                disableAutoLaunch(for: typeName)
+                launchInstance(
+                    typeName: typeName,
+                    regionName: region.name,
+                    autoLaunched: true,
+                    displayName: instance.instanceType.description,
+                    sshKeyName: sshKey,
+                    imageFamily: imageFamily
+                )
+            }
+        }
+        previousAvailableTypes = currentlyAvailable
+        hasCompletedInitialFetch = true
     }
 
     /// Keeps the progress window visible for at least `minimumSpinnerDuration`,
@@ -222,9 +353,12 @@ public final class LambdaAPIService {
         guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else { return }
 
         isLoadingSSHKeys = true
+        let epoch = apiKeyEpoch
         Task {
+            defer { self.isLoadingSSHKeys = false }
             do {
                 let keys = try await client.fetchSSHKeys(apiKey: apiKey)
+                guard epoch == self.apiKeyEpoch else { return }
                 self.sshKeys = keys.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                 if !self.selectedSSHKeyName.isEmpty,
                    !keys.contains(where: { $0.name == self.selectedSSHKeyName }) {
@@ -236,7 +370,6 @@ public final class LambdaAPIService {
             } catch {
                 // SSH key fetch failures are non-critical
             }
-            self.isLoadingSSHKeys = false
         }
     }
 
@@ -246,9 +379,12 @@ public final class LambdaAPIService {
         guard let apiKey = resolvedAPIKey, !apiKey.isEmpty else { return }
 
         isLoadingImages = true
+        let epoch = apiKeyEpoch
         Task {
+            defer { self.isLoadingImages = false }
             do {
                 let fetched = try await client.fetchImages(apiKey: apiKey)
+                guard epoch == self.apiKeyEpoch else { return }
                 self.images = fetched
                 let families = Set(fetched.map(\.family))
                 if !self.selectedImageFamily.isEmpty,
@@ -258,7 +394,6 @@ public final class LambdaAPIService {
             } catch {
                 // Image fetch failures are non-critical
             }
-            self.isLoadingImages = false
         }
     }
 
@@ -327,17 +462,24 @@ public final class LambdaAPIService {
                 // until the newly launched instance appears in the running list.
                 await self.performFetch()
             } catch {
+                var message = error.localizedDescription
+                if Self.launchMayHaveSucceeded(despite: error) {
+                    message += Self.launchMayHaveSucceededHint
+                }
                 if autoLaunched {
                     let name = displayName ?? typeName
                     self.postAutoLaunchFailureNotification(
-                        displayName: name, error: error.localizedDescription
+                        displayName: name, error: message
                     )
                 } else {
                     self.pendingAlert = AlertInfo(
                         title: "Launch Failed",
-                        message: "\(typeName): \(error.localizedDescription)"
+                        message: "\(typeName): \(message)"
                     )
                 }
+                // Refresh so an instance that launched despite the error
+                // (e.g. a timed-out POST) shows up in the running list.
+                self.fetch()
             }
             // Visible progress only exists for user-initiated launches; the
             // auto-launch path runs silently in the background.
@@ -393,6 +535,28 @@ public final class LambdaAPIService {
                 self.activeTerminateProgress = nil
             }
         }
+    }
+
+    static let launchMayHaveSucceededHint =
+        " The instance may still have launched — check Running instances before retrying."
+
+    /// Whether a launch error leaves the outcome unknown: the POST may have
+    /// reached the server and created the instance even though we never saw
+    /// the response (timeouts, dropped connections, gateway errors).
+    nonisolated static func launchMayHaveSucceeded(despite error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .badServerResponse,
+                 .cannotParseResponse, .zeroByteResource:
+                return true
+            default:
+                return false
+            }
+        }
+        if let apiError = error as? APIError, case .httpError(let code) = apiError {
+            return [502, 503, 504].contains(code)
+        }
+        return false
     }
 
     private func imageDisplayName(for family: String) -> String {

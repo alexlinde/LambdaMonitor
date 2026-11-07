@@ -25,13 +25,7 @@ struct LambdaMonitorApp: App {
             // Clear persisted state so each UI-test launch starts from the
             // same known baseline (no watched/auto-launch types, no stale
             // SSH/image selections leaking across runs).
-            for key in [
-                "watchedInstanceTypes",
-                "autoLaunchInstanceTypes",
-                "autoLaunchConfigs",
-                "selectedSSHKeyName",
-                "selectedImageFamily",
-            ] {
+            for key in LambdaAPIService.persistedDefaultsKeys {
                 UserDefaults.standard.removeObject(forKey: key)
             }
             service = LambdaAPIService(

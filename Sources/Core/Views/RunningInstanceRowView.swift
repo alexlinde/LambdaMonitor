@@ -208,12 +208,16 @@ public struct TerminateWindowView: View {
                 TerminateInProgressView(progress: progress)
             } else if let instance = apiService.pendingTerminate {
                 TerminateConfirmationForm(instance: instance, apiService: apiService)
+                    .id(instance.id)
             } else {
                 Color.clear.frame(width: 1, height: 1)
             }
         }
         .onChange(of: isFinished) { _, finished in
             if finished { dismiss() }
+        }
+        .onDisappear {
+            apiService.pendingTerminate = nil
         }
     }
 }
@@ -262,6 +266,7 @@ private struct TerminateConfirmationForm: View {
 
 // MARK: - Previews
 
+#if DEBUG
 #Preview("Active") {
     RunningInstanceRowView(instance: MockData.runningH100, apiService: PreviewService.populated())
         .padding()
@@ -282,3 +287,4 @@ private struct TerminateConfirmationForm: View {
     return RunningInstanceRowView(instance: MockData.runningH100, apiService: service)
         .padding()
 }
+#endif

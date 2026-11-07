@@ -285,6 +285,11 @@ public struct InstanceListView: View {
                 Text("Not connected")
                     .font(.caption2)
                     .foregroundStyle(.red.opacity(0.8))
+            } else if let runningError = apiService.runningInstancesError {
+                Text("Running list may be stale")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .help(runningError)
             } else if let lastUpdated = apiService.lastUpdated {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     let elapsed = Int(context.date.timeIntervalSince(lastUpdated))
@@ -308,6 +313,7 @@ public struct InstanceListView: View {
 
 // MARK: - Previews
 
+#if DEBUG
 #Preview("Populated") {
     InstanceListView(apiService: PreviewService.populated())
 }
@@ -324,3 +330,4 @@ public struct InstanceListView: View {
     InstanceListView(apiService: PreviewService.empty())
 }
 
+#endif

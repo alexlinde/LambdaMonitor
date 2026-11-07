@@ -18,11 +18,37 @@ private func setUpTestService() -> (LambdaAPIService, MockAPIClient) {
 @MainActor
 private func cleanupTestState() {
     KeychainService.delete()
-    UserDefaults.standard.removeObject(forKey: "watchedInstanceTypes")
-    UserDefaults.standard.removeObject(forKey: "autoLaunchInstanceTypes")
-    UserDefaults.standard.removeObject(forKey: "autoLaunchConfigs")
-    UserDefaults.standard.removeObject(forKey: "sshKeyName")
-    UserDefaults.standard.removeObject(forKey: "imageFamily")
+    for key in LambdaAPIService.persistedDefaultsKeys {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
+
+/// Polls `condition` every ~10ms until it holds, recording an issue if it
+/// doesn't within `timeout`. Replaces fixed sleeps, which flake under load.
+@MainActor
+private func waitUntil(
+    timeout: Duration = .seconds(3),
+    _ description: String = "condition",
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ condition: @MainActor () -> Bool
+) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while !condition() {
+        if ContinuousClock.now >= deadline {
+            Issue.record("Timed out waiting for \(description)", sourceLocation: sourceLocation)
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+/// Thread-safe recorder for values reported from mock callbacks, which run
+/// off the main actor.
+private final class Recorder<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [T] = []
+    func append(_ value: T) { lock.withLock { storage.append(value) } }
+    var values: [T] { lock.withLock { storage } }
 }
 
 @Suite("LambdaAPIService", .serialized)
@@ -39,8 +65,7 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success(MockData.mixedInstances)
         mock.runningInstancesResult = .success([MockData.runningH100])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         #expect(service.instances.count == 5)
         #expect(service.runningInstances.count == 1)
@@ -58,8 +83,7 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success(MockData.mixedInstances)
         mock.runningInstancesResult = .success([])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         let availableSlice = service.instances.prefix(while: \.isAvailable)
         let unavailableSlice = service.instances.drop(while: \.isAvailable)
@@ -78,8 +102,7 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .failure(APIError.unauthorized)
         mock.runningInstancesResult = .success([])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         #expect(service.error != nil)
     }
@@ -93,8 +116,7 @@ struct LambdaAPIServiceTests {
         let mock = MockAPIClient()
         let service = LambdaAPIService(client: mock)
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(50))
+        await service.refresh()
 
         #expect(service.error == "No API key configured")
         #expect(service.instances.isEmpty)
@@ -123,7 +145,7 @@ struct LambdaAPIServiceTests {
         mock.runningInstancesResult = .success([MockData.runningH100])
 
         service.startAutoRefresh()
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("running instances to load") { service.runningInstances.count == 1 }
 
         #expect(mock.fetchRunningInstancesCallCount >= 1)
         #expect(mock.fetchInstanceTypesCallCount >= 1)
@@ -143,7 +165,7 @@ struct LambdaAPIServiceTests {
         mock.sshKeysResult = .success([MockData.sshKey2, MockData.sshKey1])
 
         service.fetchSSHKeys()
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("SSH keys to load") { !service.isLoadingSSHKeys }
 
         #expect(service.sshKeys.count == 2)
         #expect(service.sshKeys[0].name == "my-laptop")
@@ -160,7 +182,7 @@ struct LambdaAPIServiceTests {
         mock.sshKeysResult = .success([MockData.sshKey1])
 
         service.fetchSSHKeys()
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("SSH keys to load") { !service.isLoadingSSHKeys }
 
         #expect(service.selectedSSHKeyName == "my-laptop")
     }
@@ -187,7 +209,7 @@ struct LambdaAPIServiceTests {
         mock.imagesResult = .success([MockData.ubuntuLtsImage, MockData.lambdaStackImage, extraLambdaStack])
 
         service.fetchImages()
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("images to load") { !service.isLoadingImages }
 
         #expect(service.images.count == 3)
         #expect(service.imageFamilies == ["lambda-stack", "ubuntu-lts"])
@@ -204,7 +226,7 @@ struct LambdaAPIServiceTests {
         mock.imagesResult = .success([MockData.lambdaStackImage])
 
         service.fetchImages()
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("images to load") { !service.isLoadingImages }
 
         #expect(service.selectedImageFamily == "")
     }
@@ -219,7 +241,7 @@ struct LambdaAPIServiceTests {
         mock.imagesResult = .success(MockData.mixedImages)
 
         service.fetchImages()
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("images to load") { !service.isLoadingImages }
 
         #expect(service.selectedImageFamily == "ubuntu-lts")
     }
@@ -336,8 +358,7 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success([h100Unavailable])
         mock.runningInstancesResult = .success([])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         service.toggleWatch(for: "gpu_1x_h100_sxm5")
         service.configureAutoLaunch(
@@ -347,8 +368,10 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success([MockData.h100x1Available])
         mock.launchResult = .success(["i-auto-config"])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(200))
+        await service.refresh()
+        try await waitUntil("auto-launch to finish") {
+            mock.launchCallCount == 1 && service.launchingTypeNames.isEmpty
+        }
 
         #expect(mock.launchCallCount == 1)
         #expect(mock.lastLaunchedSSHKeyNames == ["work-desktop"])
@@ -374,7 +397,7 @@ struct LambdaAPIServiceTests {
             sshKeyName: "work-desktop",
             imageFamily: "ubuntu-lts"
         )
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("launch to finish") { service.launchingTypeNames.isEmpty }
 
         #expect(mock.lastLaunchedSSHKeyNames == ["work-desktop"])
         #expect(mock.lastLaunchedImageFamily == "ubuntu-lts")
@@ -406,7 +429,7 @@ struct LambdaAPIServiceTests {
         #expect(service.activeLaunchProgress?.sshKeyName == "my-laptop")
         #expect(service.activeLaunchProgress?.imageDescription == "Lambda Stack (latest)")
 
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("launch to finish") { service.launchingTypeNames.isEmpty }
 
         #expect(!service.launchingTypeNames.contains("gpu_1x_h100_sxm5"))
         #expect(service.activeLaunchProgress == nil)
@@ -430,7 +453,7 @@ struct LambdaAPIServiceTests {
         service.selectedSSHKeyName = "alex-macbook"
 
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("launch to finish") { service.launchingTypeNames.isEmpty }
 
         #expect(mock.lastLaunchedSSHKeyNames == ["alex-macbook"])
     }
@@ -448,7 +471,7 @@ struct LambdaAPIServiceTests {
         service.selectedImageFamily = "ubuntu-lts"
 
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("launch to finish") { service.launchingTypeNames.isEmpty }
 
         #expect(mock.lastLaunchedSSHKeyNames == ["my-laptop"])
         #expect(mock.lastLaunchedImageFamily == "ubuntu-lts")
@@ -467,7 +490,7 @@ struct LambdaAPIServiceTests {
         service.selectedImageFamily = ""
 
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("launch to finish") { service.launchingTypeNames.isEmpty }
 
         #expect(mock.lastLaunchedImageFamily == nil)
     }
@@ -499,7 +522,7 @@ struct LambdaAPIServiceTests {
             sshKeyName: chosenKey,
             imageFamily: chosenImage
         )
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("launch to finish") { service.launchingTypeNames.isEmpty }
 
         // Forwarded to the API…
         #expect(mock.lastLaunchedSSHKeyNames == [chosenKey])
@@ -519,7 +542,7 @@ struct LambdaAPIServiceTests {
         service.selectedSSHKeyName = "my-laptop"
 
         service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil("launch to finish") { service.launchingTypeNames.isEmpty }
 
         #expect(service.pendingAlert != nil)
         #expect(service.pendingAlert?.title == "Launch Failed")
@@ -558,7 +581,7 @@ struct LambdaAPIServiceTests {
         #expect(service.activeTerminateProgress?.instanceId == "i-abc123")
         #expect(service.activeTerminateProgress?.regionDescription == "US West")
 
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("terminate to finish") { service.terminatingInstanceIds.isEmpty }
 
         #expect(mock.terminateCallCount == 1)
         #expect(mock.lastTerminatedIds == ["i-abc123"])
@@ -575,7 +598,7 @@ struct LambdaAPIServiceTests {
         mock.terminateResult = .failure(APIError.serverError("Cannot terminate"))
 
         service.terminateInstance(id: "i-abc123", description: "1x H100")
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil("terminate to finish") { service.terminatingInstanceIds.isEmpty }
 
         #expect(service.pendingAlert != nil)
         #expect(service.pendingAlert?.title == "Terminate Failed")
@@ -598,16 +621,14 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success(MockData.mixedInstances)
         mock.runningInstancesResult = .success([])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         #expect(!service.instances.isEmpty)
         #expect(service.error == nil)
 
         mock.instanceTypesResult = .failure(URLError(.notConnectedToInternet))
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         #expect(!service.instances.isEmpty, "cached instances must be preserved")
         #expect(service.error != nil, "error must be set even though instances is non-empty")
@@ -622,14 +643,12 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .failure(URLError(.notConnectedToInternet))
         mock.runningInstancesResult = .success([])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
         #expect(service.error != nil)
 
         mock.instanceTypesResult = .success(MockData.mixedInstances)
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         #expect(service.error == nil)
     }
@@ -651,8 +670,7 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success([h100Unavailable])
         mock.runningInstancesResult = .success([])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await service.refresh()
 
         service.toggleWatch(for: "gpu_1x_h100_sxm5")
         service.toggleAutoLaunch(for: "gpu_1x_h100_sxm5")
@@ -661,8 +679,10 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success([MockData.h100x1Available])
         mock.launchResult = .success(["i-auto-launched"])
 
-        service.fetch()
-        try await Task.sleep(for: .milliseconds(200))
+        await service.refresh()
+        try await waitUntil("auto-launch to finish") {
+            mock.launchCallCount == 1 && service.launchingTypeNames.isEmpty
+        }
 
         #expect(mock.launchCallCount == 1)
         #expect(mock.lastLaunchedTypeName == "gpu_1x_h100_sxm5")
@@ -685,9 +705,214 @@ struct LambdaAPIServiceTests {
         mock.instanceTypesResult = .success([MockData.h100x1Available])
         mock.runningInstancesResult = .success([])
 
-        freshService.fetch()
-        try await Task.sleep(for: .milliseconds(100))
+        await freshService.refresh()
 
+        // launchInstance() inserts into launchingTypeNames synchronously, so an
+        // empty set right after the fetch applies proves nothing was launched.
+        #expect(freshService.launchingTypeNames.isEmpty)
         #expect(mock.launchCallCount == 0)
+    }
+
+    @Test("Auto-launch launches every newly available candidate in one poll")
+    @MainActor
+    func autoLaunchAllCandidates() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        service.selectedSSHKeyName = "my-laptop"
+        let h100Name = MockData.h100x1Available.instanceType.name
+        let a6000Name = MockData.a6000Available.instanceType.name
+        let unavailable = [MockData.h100x1Available, MockData.a6000Available].map {
+            OfferedInstanceType(instanceType: $0.instanceType, regionsWithCapacityAvailable: [])
+        }
+        mock.instanceTypesResult = .success(unavailable)
+        await service.refresh()
+
+        for name in [h100Name, a6000Name] {
+            service.toggleWatch(for: name)
+            service.toggleAutoLaunch(for: name)
+        }
+
+        let launched = Recorder<String>()
+        mock.onLaunchInstance = { typeName, _ in launched.append(typeName) }
+        mock.instanceTypesResult = .success([MockData.h100x1Available, MockData.a6000Available])
+        await service.refresh()
+        try await waitUntil("both auto-launches to finish") {
+            mock.launchCallCount == 2 && service.launchingTypeNames.isEmpty
+        }
+
+        #expect(mock.launchCallCount == 2)
+        #expect(Set(launched.values) == [h100Name, a6000Name])
+        #expect(!service.isAutoLaunch(h100Name))
+        #expect(!service.isAutoLaunch(a6000Name))
+    }
+
+    @Test("Auto-launch with no SSH key does not launch and stays enabled")
+    @MainActor
+    func autoLaunchWithoutSSHKeySkips() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        service.selectedSSHKeyName = ""
+        let h100Unavailable = OfferedInstanceType(
+            instanceType: MockData.h100x1Info,
+            regionsWithCapacityAvailable: []
+        )
+        mock.instanceTypesResult = .success([h100Unavailable])
+        await service.refresh()
+
+        service.toggleWatch(for: "gpu_1x_h100_sxm5")
+        service.toggleAutoLaunch(for: "gpu_1x_h100_sxm5")
+
+        mock.instanceTypesResult = .success([MockData.h100x1Available])
+        await service.refresh()
+
+        // launchInstance() would have inserted into launchingTypeNames
+        // synchronously while the fetch applied.
+        #expect(service.launchingTypeNames.isEmpty)
+        #expect(mock.launchCallCount == 0)
+        #expect(service.isAutoLaunch("gpu_1x_h100_sxm5"))
+    }
+
+    // MARK: - Running instances failure
+
+    @Test("Running-instances failure keeps previous list and sets runningInstancesError")
+    @MainActor
+    func runningInstancesFailurePreservesList() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.instanceTypesResult = .success(MockData.mixedInstances)
+        mock.runningInstancesResult = .success([MockData.runningH100])
+        await service.refresh()
+        #expect(service.runningInstances.count == 1)
+        #expect(service.runningInstancesError == nil)
+
+        mock.runningInstancesResult = .failure(URLError(.timedOut))
+        await service.refresh()
+        #expect(service.runningInstances.map(\.id) == [MockData.runningH100.id])
+        #expect(service.runningInstancesError != nil)
+        #expect(service.error == nil)
+
+        mock.runningInstancesResult = .success([])
+        await service.refresh()
+        #expect(service.runningInstances.isEmpty)
+        #expect(service.runningInstancesError == nil)
+    }
+
+    // MARK: - Fetch ordering
+
+    @Test("Stale fetch results that complete late are discarded")
+    @MainActor
+    func staleFetchDiscarded() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        let stale = [OfferedInstanceType(instanceType: MockData.h100x1Info, regionsWithCapacityAvailable: [])]
+        let fresh = MockData.mixedInstances
+        // First call is slow and returns stale data; later calls are fast.
+        mock.onFetchInstanceTypes = { [mock] _ in
+            if mock.fetchInstanceTypesCallCount == 1 {
+                try await Task.sleep(for: .milliseconds(300))
+                return stale
+            }
+            return fresh
+        }
+
+        let slow = Task { await service.refresh() }
+        try await waitUntil("slow fetch to start") { mock.fetchInstanceTypesCallCount == 1 }
+
+        await service.refresh()
+        #expect(service.instances.count == fresh.count)
+        #expect(service.isLoading, "older fetch is still in flight")
+
+        await slow.value
+        #expect(service.instances.count == fresh.count, "stale result must not overwrite newer one")
+        #expect(!service.isLoading)
+    }
+
+    @Test("clearAPIKey() discards in-flight fetch results and resets state")
+    @MainActor
+    func clearAPIKeyDiscardsInFlight() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.runningInstancesResult = .success([MockData.runningH100])
+        mock.onFetchInstanceTypes = { _ in
+            try await Task.sleep(for: .milliseconds(200))
+            return MockData.mixedInstances
+        }
+        service.sshKeys = [MockData.sshKey1]
+        service.selectedSSHKeyName = "my-laptop"
+        #expect(service.hasAPIKey)
+
+        let inFlight = Task { await service.refresh() }
+        try await waitUntil("fetch to start") { mock.fetchInstanceTypesCallCount == 1 }
+
+        service.clearAPIKey()
+        await inFlight.value
+
+        #expect(!service.hasAPIKey)
+        #expect(!service.hasStoredAPIKey)
+        #expect(service.resolvedAPIKey == nil)
+        #expect(service.instances.isEmpty)
+        #expect(service.runningInstances.isEmpty)
+        #expect(service.sshKeys.isEmpty)
+        #expect(service.selectedSSHKeyName == "")
+        #expect(service.lastUpdated == nil)
+        #expect(service.error == "No API key configured")
+    }
+
+    // MARK: - API key override
+
+    @Test("saveAPIKey()/clearAPIKey() never touch Keychain with an override")
+    @MainActor
+    func saveAPIKeyWithOverrideIsNoOp() async throws {
+        defer { cleanupTestState() }
+        KeychainService.delete()
+
+        let service = LambdaAPIService(client: MockAPIClient(), apiKeyOverride: "override-key")
+        #expect(service.hasStoredAPIKey)
+
+        #expect(service.saveAPIKey("fake-key"))
+        #expect(KeychainService.load() == nil, "override mode must not write the Keychain")
+        #expect(service.resolvedAPIKey == "override-key")
+        #expect(service.hasAPIKey)
+
+        service.clearAPIKey()
+        #expect(service.hasAPIKey)
+        #expect(service.resolvedAPIKey == "override-key")
+    }
+
+    // MARK: - Launch outcome unknown
+
+    @Test("Timed-out launch warns it may have launched and refreshes")
+    @MainActor
+    func launchTimeoutWarnsAndRefreshes() async throws {
+        let (service, mock) = setUpTestService()
+        defer { cleanupTestState() }
+
+        mock.launchResult = .failure(URLError(.timedOut))
+        mock.runningInstancesResult = .success([MockData.runningH100])
+        service.selectedSSHKeyName = "my-laptop"
+
+        service.launchInstance(typeName: "gpu_1x_h100_sxm5", regionName: "us-west-1")
+        try await waitUntil("launch failure and follow-up refresh") {
+            service.pendingAlert != nil && service.runningInstances.count == 1
+        }
+
+        #expect(service.pendingAlert?.title == "Launch Failed")
+        #expect(service.pendingAlert?.message.contains("may still have launched") == true)
+        #expect(mock.fetchRunningInstancesCallCount >= 1)
+    }
+
+    @Test("Definitive launch failure does not add the may-have-launched hint")
+    @MainActor
+    func launchDefinitiveFailureNoHint() async throws {
+        #expect(LambdaAPIService.launchMayHaveSucceeded(despite: URLError(.timedOut)))
+        #expect(LambdaAPIService.launchMayHaveSucceeded(despite: URLError(.networkConnectionLost)))
+        #expect(!LambdaAPIService.launchMayHaveSucceeded(despite: URLError(.notConnectedToInternet)))
+        #expect(!LambdaAPIService.launchMayHaveSucceeded(despite: APIError.serverError("No capacity")))
+        #expect(!LambdaAPIService.launchMayHaveSucceeded(despite: APIError.unauthorized))
     }
 }

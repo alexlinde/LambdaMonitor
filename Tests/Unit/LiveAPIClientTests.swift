@@ -63,7 +63,7 @@ struct LiveAPIClientTests {
             return (data, response)
         }
 
-        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/instance-types")!
+        let url = URL(string: "https://cloud.lambda.ai/api/v1/instance-types")!
         var request = URLRequest(url: url)
         request.setValue("Bearer test-key", forHTTPHeaderField: "Authorization")
 
@@ -85,7 +85,7 @@ struct LiveAPIClientTests {
             return (data, response)
         }
 
-        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/instance-types")!
+        let url = URL(string: "https://cloud.lambda.ai/api/v1/instance-types")!
         var request = URLRequest(url: url)
         request.setValue("Bearer bad-key", forHTTPHeaderField: "Authorization")
 
@@ -106,7 +106,7 @@ struct LiveAPIClientTests {
             return (data, response)
         }
 
-        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/ssh-keys")!
+        let url = URL(string: "https://cloud.lambda.ai/api/v1/ssh-keys")!
         var request = URLRequest(url: url)
         request.setValue("Bearer my-secret-key", forHTTPHeaderField: "Authorization")
 
@@ -141,7 +141,7 @@ struct LiveAPIClientTests {
             return (data, response)
         }
 
-        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/instance-operations/launch")!
+        let url = URL(string: "https://cloud.lambda.ai/api/v1/instance-operations/launch")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer test-key", forHTTPHeaderField: "Authorization")
@@ -188,7 +188,7 @@ struct LiveAPIClientTests {
             return (data, response)
         }
 
-        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/instance-operations/launch")!
+        let url = URL(string: "https://cloud.lambda.ai/api/v1/instance-operations/launch")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer test-key", forHTTPHeaderField: "Authorization")
@@ -219,7 +219,7 @@ struct LiveAPIClientTests {
             return (data, response)
         }
 
-        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/images")!
+        let url = URL(string: "https://cloud.lambda.ai/api/v1/images")!
         var request = URLRequest(url: url)
         request.setValue("Bearer test-key", forHTTPHeaderField: "Authorization")
 
@@ -245,7 +245,7 @@ struct LiveAPIClientTests {
             return (data, response)
         }
 
-        let url = URL(string: "https://cloud.lambdalabs.com/api/v1/instance-operations/launch")!
+        let url = URL(string: "https://cloud.lambda.ai/api/v1/instance-operations/launch")!
         let request = URLRequest(url: url)
 
         let (data, response) = try await session.data(for: request)
@@ -254,6 +254,115 @@ struct LiveAPIClientTests {
 
         let errorResponse = try JSONDecoder().decode(LambdaErrorResponse.self, from: data)
         #expect(errorResponse.error.message.contains("Insufficient capacity"))
+    }
+
+    // MARK: - Error mapping (LiveAPIClient.validate)
+
+    private func makeClient() -> LiveAPIClient { LiveAPIClient(session: makeSession()) }
+
+    private func stub(_ path: String, status: Int, body: String) {
+        MockURLProtocol.handlers[path] = { request in
+            (Data(body.utf8), makeResponse(url: request.url!, statusCode: status))
+        }
+    }
+
+    @Test("GET with error body surfaces the server message")
+    func getErrorBodySurfacesMessage() async {
+        stub("/api/v1/instance-types", status: 500, body: MockData.errorJSON)
+        do {
+            _ = try await makeClient().fetchInstanceTypes(apiKey: "k")
+            Issue.record("expected throw")
+        } catch let APIError.serverError(message) {
+            #expect(message.contains("Insufficient capacity"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("GET 401 maps to unauthorized even with error body")
+    func get401Unauthorized() async {
+        stub("/api/v1/ssh-keys", status: 401, body: MockData.errorJSON)
+        do {
+            _ = try await makeClient().fetchSSHKeys(apiKey: "k")
+            Issue.record("expected throw")
+        } catch APIError.unauthorized {
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("Terminate 401 maps to unauthorized")
+    func terminate401Unauthorized() async {
+        stub("/api/v1/instance-operations/terminate", status: 401, body: "{}")
+        do {
+            try await makeClient().terminateInstance(apiKey: "k", instanceIds: ["i-1"])
+            Issue.record("expected throw")
+        } catch APIError.unauthorized {
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("Launch 403 with error body maps to serverError")
+    func launch403WithBody() async {
+        stub("/api/v1/instance-operations/launch", status: 403, body: MockData.errorJSON)
+        do {
+            _ = try await makeClient().launchInstance(
+                apiKey: "k", typeName: "t", regionName: "r", sshKeyNames: ["a"], imageFamily: nil)
+            Issue.record("expected throw")
+        } catch let APIError.serverError(message) {
+            #expect(message.contains("Insufficient capacity"))
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("403 without error body maps to unauthorized")
+    func get403NoBody() async {
+        stub("/api/v1/images", status: 403, body: "{}")
+        do {
+            _ = try await makeClient().fetchImages(apiKey: "k")
+            Issue.record("expected throw")
+        } catch APIError.unauthorized {
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("Other status without body maps to httpError")
+    func httpErrorFallback() async {
+        stub("/api/v1/instances", status: 502, body: "")
+        do {
+            _ = try await makeClient().fetchRunningInstances(apiKey: "k")
+            Issue.record("expected throw")
+        } catch APIError.httpError(let code) {
+            #expect(code == 502)
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    @Test("Any 2xx status is accepted", arguments: [200, 201, 202, 204])
+    func twoXXAccepted(status: Int) async throws {
+        stub("/api/v1/instance-operations/terminate", status: status, body: "")
+        try await makeClient().terminateInstance(apiKey: "k", instanceIds: ["i-1"])
+
+        stub("/api/v1/instance-types", status: status, body: MockData.instanceTypesJSON)
+        let types = try await makeClient().fetchInstanceTypes(apiKey: "k")
+        #expect(types.count == 2)
+    }
+
+    @Test("Non-HTTP response maps to invalidResponse")
+    func nonHTTPResponse() {
+        let response = URLResponse(url: URL(string: "https://cloud.lambda.ai")!, mimeType: nil,
+                                   expectedContentLength: 0, textEncodingName: nil)
+        do {
+            try LiveAPIClient.validate(data: Data(), response: response)
+            Issue.record("expected throw")
+        } catch APIError.invalidResponse {
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
     }
 
     // MARK: - APIError
