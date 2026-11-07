@@ -149,6 +149,11 @@ hdiutil convert "$DMG_TEMP" \
 rm -f "$DMG_TEMP"
 echo "  Created: $DMG_FINAL"
 
+echo "▸ Signing DMG…"
+codesign --force --sign "$IDENTITY" --timestamp "$DMG_FINAL"
+codesign --verify --strict "$DMG_FINAL"
+echo "  DMG signature verified."
+
 # ── Notarize ───────────────────────────────────────────────────────────────────
 
 if [[ "${SKIP_NOTARIZE:-0}" == "1" ]]; then
